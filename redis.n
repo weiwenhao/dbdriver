@@ -1,0 +1,157 @@
+import net.tcp
+import io.buf
+import fmt
+
+type conn_t = struct{
+    ptr<tcp.conn_t> conn
+    buf.reader<ptr<tcp.conn_t>> reader
+}
+
+fn connect(string host, string password):ptr<conn_t>! {
+    var tcp_conn = tcp.connect_timeout(host, 10000)
+    var conn = new conn_t(conn = tcp_conn, reader = buf.reader<ptr<tcp.conn_t>>{
+        rd = tcp_conn,
+    })
+
+    if password != "" {
+        conn.send('AUTH', 'hello')
+
+        conn.recv() // 读取认证响应
+    }
+
+    return conn
+}
+
+fn conn_t.send(...[string] args):void! {
+    var command = fmt.sprintf('*%d\r\n', args.len())
+    for arg in args {
+        command += fmt.sprintf('$%d\r\n%s\r\n', arg.len(), arg)
+    }
+    self.conn.write(command as [u8])
+}
+
+fn conn_t.recv():string! {
+    var line = self.reader.read_line()
+    match line[0] {
+        '+'.char()|'-'.char()|':'.char() -> { 
+            return line.slice(1, line.len()) 
+        }
+        '$'.char() -> {
+            var length = line.slice(1, line.len()).to_int()
+
+            var data = vec_new<u8>(0, length + 2)
+            self.reader.read(data)
+
+            return data.slice(0, length) as string
+        }
+        _ -> {
+            return line
+        }
+    }
+
+
+    return ''
+}
+
+fn conn_t.execute(...[string] args):string! {
+    self.send(...args)
+
+    return self.recv()
+}
+
+fn main():void! {
+    var conn = connect('127.0.0.1:6379', 'hello')
+    
+    // 基础字符串操作
+    var resp = conn.execute('SET', 'test_key', 'Hello Redis!')
+    println('SET test_key:', resp)
+
+    resp = conn.execute('GET', 'test_key')
+    println('GET test_key:', resp)
+
+    resp = conn.execute('PING')
+    println('PING:', resp)
+
+    // 字符串操作测试
+    resp = conn.execute('APPEND', 'test_key', ' World!')
+    println('APPEND test_key:', resp)
+
+    resp = conn.execute('GET', 'test_key')
+    println('GET test_key after append:', resp)
+
+    resp = conn.execute('STRLEN', 'test_key')
+    println('STRLEN test_key:', resp)
+
+    // 数字操作
+    resp = conn.execute('SET', 'counter', '10')
+    println('SET counter:', resp)
+
+    resp = conn.execute('INCR', 'counter')
+    println('INCR counter:', resp)
+
+    resp = conn.execute('DECR', 'counter')
+    println('DECR counter:', resp)
+
+    resp = conn.execute('INCRBY', 'counter', '5')
+    println('INCRBY counter 5:', resp)
+
+    // 键操作
+    resp = conn.execute('EXISTS', 'test_key')
+    println('EXISTS test_key:', resp)
+
+    resp = conn.execute('EXPIRE', 'test_key', '60')
+    println('EXPIRE test_key 60:', resp)
+
+    resp = conn.execute('TTL', 'test_key')
+    println('TTL test_key:', resp)
+
+    // 列表操作
+    resp = conn.execute('LPUSH', 'test_list', 'item1', 'item2', 'item3')
+    println('LPUSH test_list:', resp)
+
+    resp = conn.execute('LLEN', 'test_list')
+    println('LLEN test_list:', resp)
+
+    resp = conn.execute('LPOP', 'test_list')
+    println('LPOP test_list:', resp)
+
+    resp = conn.execute('RPUSH', 'test_list', 'item4')
+    println('RPUSH test_list:', resp)
+
+    // 哈希操作
+    resp = conn.execute('HSET', 'test_hash', 'field1', 'value1')
+    println('HSET test_hash:', resp)
+
+    resp = conn.execute('HGET', 'test_hash', 'field1')
+    println('HGET test_hash field1:', resp)
+
+    resp = conn.execute('HMSET', 'test_hash', 'field2', 'value2', 'field3', 'value3')
+    println('HMSET test_hash:', resp)
+
+    resp = conn.execute('HLEN', 'test_hash')
+    println('HLEN test_hash:', resp)
+
+    // 集合操作
+    resp = conn.execute('SADD', 'test_set', 'member1', 'member2', 'member3')
+    println('SADD test_set:', resp)
+
+    resp = conn.execute('SCARD', 'test_set')
+    println('SCARD test_set:', resp)
+
+    resp = conn.execute('SISMEMBER', 'test_set', 'member1')
+    println('SISMEMBER test_set member1:', resp)
+
+    // 有序集合操作
+    resp = conn.execute('ZADD', 'test_zset', '1', 'one', '2', 'two', '3', 'three')
+    println('ZADD test_zset:', resp)
+
+    resp = conn.execute('ZCARD', 'test_zset')
+    println('ZCARD test_zset:', resp)
+
+    resp = conn.execute('ZSCORE', 'test_zset', 'two')
+    println('ZSCORE test_zset two:', resp)
+
+    // 清理测试数据
+    resp = conn.execute('DEL', 'test_key', 'counter', 'test_list', 'test_hash', 'test_set', 'test_zset')
+    println('DEL cleanup:', resp)
+}
