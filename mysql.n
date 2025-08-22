@@ -16,6 +16,9 @@ const CLIENT_PLUGIN_AUTH_LENENC_CLIENT_DATA = 0x00200000
 // MySQL commands
 const COM_QUERY = 0x03
 const COM_QUIT = 0x01
+const COM_STMT_PREPARE = 0x16
+const COM_STMT_EXECUTE = 0x17
+const COM_STMT_CLOSE = 0x19
 
 // Packet type identifiers
 const PACKET_OK = 0x00
@@ -30,6 +33,35 @@ const AUTH_CACHING_SHA2 = "caching_sha2_password"
 // Authentication status
 const AUTH_SUCCESS = 0x03
 const AUTH_FAIL = 0x04
+
+// MySQL field types - complete definition
+const MYSQL_TYPE_DECIMAL = 0x00
+const MYSQL_TYPE_TINY = 0x01
+const MYSQL_TYPE_SHORT = 0x02
+const MYSQL_TYPE_LONG = 0x03
+const MYSQL_TYPE_FLOAT = 0x04
+const MYSQL_TYPE_DOUBLE = 0x05
+const MYSQL_TYPE_NULL = 0x06
+const MYSQL_TYPE_TIMESTAMP = 0x07
+const MYSQL_TYPE_LONGLONG = 0x08
+const MYSQL_TYPE_INT24 = 0x09
+const MYSQL_TYPE_DATE = 0x0a
+const MYSQL_TYPE_TIME = 0x0b
+const MYSQL_TYPE_DATETIME = 0x0c
+const MYSQL_TYPE_YEAR = 0x0d
+const MYSQL_TYPE_NEWDATE = 0x0e
+const MYSQL_TYPE_VARCHAR = 0x0f
+const MYSQL_TYPE_BIT = 0x10
+const MYSQL_TYPE_NEWDECIMAL = 0xf6
+const MYSQL_TYPE_ENUM = 0xf7
+const MYSQL_TYPE_SET = 0xf8
+const MYSQL_TYPE_TINY_BLOB = 0xf9
+const MYSQL_TYPE_MEDIUM_BLOB = 0xfa
+const MYSQL_TYPE_LONG_BLOB = 0xfb
+const MYSQL_TYPE_BLOB = 0xfc
+const MYSQL_TYPE_VAR_STRING = 0xfd
+const MYSQL_TYPE_STRING = 0xfe
+const MYSQL_TYPE_GEOMETRY = 0xff
 
 // Handshake packet structure
 type handshake_packet_t = struct {
@@ -53,6 +85,15 @@ type query_result_t = struct {
     [[string]] rows      // Data rows
 }
 
+// Prepared statement type
+type stmt_t = struct {
+    ptr<conn_t> conn
+    u32 statement_id
+    u16 param_count
+    u16 column_count
+    string query_string
+}
+
 // MySQL connection type
 type conn_t = struct {
     ptr<tcp.conn_t> conn
@@ -68,6 +109,9 @@ fn connect(string host, string username, string password):ptr<conn_t>! {
 
     // Execute authentication process
     client.authenticate(username, password)
+
+    // Set charset to utf8mb4 to support full UTF-8 character set including emoji
+    client.set_charset("utf8mb4")
 
     return client
 }
@@ -195,7 +239,7 @@ fn conn_t.build_auth_packet(u32 capabilities, string username, [u8] auth_respons
     packet.append([0x00, 0x00, 0x00, 0x01])
 
     // Character set (1 byte)
-    packet.push(0x21) // utf8_general_ci
+    packet.push(0xe0) // utf8mb4_general_ci
 
     // Reserved bytes (23 bytes)
     packet.append(vec_new<u8>(0, 23))
@@ -353,7 +397,6 @@ fn conn_t.query(string query):query_result_t! {
     var query_packet = vec_new<u8>(0, 1 + query.len())
     query_packet[0] = COM_QUERY
     query_packet.slice(1, query_packet.len()).copy(query as [u8])
-    println('[query] query_packet is', query_packet as string)
 
     self.write_packet(query_packet)
 
@@ -374,6 +417,65 @@ fn conn_t.query(string query):query_result_t! {
         }
         _ -> {
             return self.parse_query_result(packet)
+        }
+    }
+}
+
+// Prepare statement
+fn conn_t.prepare(string query):ptr<stmt_t>! {
+    if self.closed {
+        throw errorf("Connection is closed")
+    }
+
+    self.seq_id = 0
+
+    var prepare_packet = vec_new<u8>(0, 1 + query.len())
+    prepare_packet[0] = COM_STMT_PREPARE
+    prepare_packet.slice(1, prepare_packet.len()).copy(query as [u8])
+
+    self.write_packet(prepare_packet)
+
+    var packet = self.read_packet()
+
+    if packet.len() == 0 {
+        throw errorf("Received empty prepare response")
+    }
+
+    if packet[0] == PACKET_ERROR {
+        var error_msg = self.parse_error_packet(packet)
+        throw errorf(error_msg)
+    }
+
+    return self.parse_prepare_response(packet, query)
+}
+
+// Set charset for connection
+fn conn_t.set_charset(string charset):void! {
+    var query = fmt.sprintf("SET NAMES %s", charset)
+    self.seq_id = 0
+
+    var query_packet = vec_new<u8>(0, 1 + query.len())
+    query_packet[0] = COM_QUERY
+    query_packet.slice(1, query_packet.len()).copy(query as [u8])
+
+    self.write_packet(query_packet)
+
+    var packet = self.read_packet()
+
+    if packet.len() == 0 {
+        throw errorf("Received empty charset setting response")
+    }
+
+    match packet[0] {
+        PACKET_OK -> {
+            return
+        }
+        PACKET_ERROR -> {
+            var error_msg = self.parse_error_packet(packet)
+            throw errorf("Failed to set charset: %s", error_msg)
+        }
+        _ -> {
+            throw errorf("Unknown charset setting response: 0x%02x", packet[0])
         }
     }
 }
@@ -605,6 +707,445 @@ fn conn_t.read_length_encoded_int([u8] data, int pos):(u64, int) {
     }
 }
 
+// Parse prepare response
+fn conn_t.parse_prepare_response([u8] packet, string query):ptr<stmt_t>! {
+    if packet.len() < 12 {
+        throw errorf("Prepare response packet length insufficient")
+    }
+
+    var pos = 1 // Skip status identifier
+    var statement_id = mem.read_u32_le(packet.slice(pos, pos + 4)) catch e {break 0 as u32}
+    pos += 4
+    var column_count = mem.read_u16_le(packet.slice(pos, pos + 2)) catch e {break 0 as u16}
+    pos += 2
+    var param_count = mem.read_u16_le(packet.slice(pos, pos + 2)) catch e {break 0 as u16}
+
+    var stmt = new stmt_t(
+        conn = self,
+        statement_id = statement_id,
+        param_count = param_count,
+        column_count = column_count,
+        query_string = query,
+    )
+
+    // If there are parameters, need to read parameter definition packets
+    if param_count > 0 {
+        for u16 i = 0; i < param_count; i += 1 {
+            self.read_packet()
+        }
+        // Read parameter EOF packet
+        self.read_packet()
+    }
+
+    // If there are columns, need to read column definition packets
+    if column_count > 0 {
+        for u16 i = 0; i < column_count; i += 1 {
+            self.read_packet()
+        }
+        // Read column EOF packet
+        self.read_packet()
+    }
+
+    return stmt
+}
+
+// Execute prepared statement
+fn stmt_t.execute(...[string] args):execute_result_t! {
+    if self.conn.closed {
+        throw errorf("Connection is closed")
+    }
+
+    self.conn.seq_id = 0
+
+    var execute_packet = self.build_execute_packet(args)
+    self.conn.write_packet(execute_packet)
+
+    var packet = self.conn.read_packet()
+
+    if packet.len() == 0 {
+        throw errorf("Received empty execute response")
+    }
+
+    match packet[0] {
+        PACKET_OK -> {
+            return self.conn.parse_execute_result(packet)
+        }
+        PACKET_ERROR -> {
+            var error_msg = self.conn.parse_error_packet(packet)
+            throw errorf(error_msg)
+        }
+        _ -> {
+            throw errorf("Execute method can only be used for non-query statements")
+        }
+    }
+}
+
+// Query with prepared statement
+fn stmt_t.query(...[string] args):query_result_t! {
+    if self.conn.closed {
+        throw errorf("Connection is closed")
+    }
+
+    self.conn.seq_id = 0
+
+    var execute_packet = self.build_execute_packet(args)
+    self.conn.write_packet(execute_packet)
+
+    var packet = self.conn.read_packet()
+
+    if packet.len() == 0 {
+        throw errorf("Received empty execute response")
+    }
+
+    match packet[0] {
+        PACKET_OK -> {
+            return query_result_t{columns = [], rows = []}
+        }
+        PACKET_ERROR -> {
+            var error_msg = self.conn.parse_error_packet(packet)
+            throw errorf(error_msg)
+        }
+        _ -> {
+            return self.parse_binary_query_result(packet)
+        }
+    }
+}
+
+// Close prepared statement
+fn stmt_t.close():void! {
+    if self.conn.closed {
+        return
+    }
+
+    self.conn.seq_id = 0
+
+    var close_packet = vec_new<u8>(0, 5)
+    close_packet[0] = COM_STMT_CLOSE
+    var stmt_id_bytes = mem.write_u32_le(self.statement_id)
+    close_packet.slice(1, 5).copy(stmt_id_bytes)
+
+    self.conn.write_packet(close_packet)
+}
+
+// Build execute packet
+fn stmt_t.build_execute_packet([string] args):[u8]! {
+    var packet = vec_cap<u8>(1024)
+
+    // Command type
+    packet.push(COM_STMT_EXECUTE)
+
+    // Statement ID
+    var stmt_id_bytes = mem.write_u32_le(self.statement_id)
+    packet.append(stmt_id_bytes)
+
+    // Flags
+    packet.push(0x00)
+
+    // Iteration count
+    packet.append([0x01, 0x00, 0x00, 0x00])
+
+    if args.len() > 0 {
+        // NULL bitmap
+        var null_bitmap_len = (args.len() + 7) / 8
+        var null_bitmap = vec_new<u8>(0, null_bitmap_len)
+        packet.append(null_bitmap)
+
+        // New parameter binding flag
+        packet.push(0x01)
+
+        // Parameter types
+        for arg in args {
+            packet.append([0xfe, 0x00]) // MYSQL_TYPE_STRING
+        }
+
+        // Parameter values
+        for arg in args {
+            var str_bytes = arg as [u8]
+            var length_bytes = self.encode_length_encoded_int(str_bytes.len() as u64)
+            packet.append(length_bytes)
+            packet.append(str_bytes)
+        }
+    }
+
+    return packet
+}
+
+// Encode length-encoded integer
+fn stmt_t.encode_length_encoded_int(u64 value):[u8] {
+    if value < 251 {
+        return [value as u8]
+    } else if value < 65536 {
+        var result = vec_new<u8>(0, 3)
+        result[0] = 0xfc
+        var val_bytes = mem.write_u16_le(value as u16) catch e {break []}
+        result.slice(1, 3).copy(val_bytes)
+        return result
+    } else if value < 16777216 {
+        var result = vec_new<u8>(0, 4)
+        result[0] = 0xfd
+        result[1] = value as u8
+        result[2] = (value >> 8) as u8
+        result[3] = (value >> 16) as u8
+        return result
+    } else {
+        var result = vec_new<u8>(0, 9)
+        result[0] = 0xfe
+        var val_bytes = mem.write_u64_le(value) catch e {break []}
+        result.slice(1, 9).copy(val_bytes)
+        return result
+    }
+}
+
+// Parse binary query result (for prepared statements)
+fn stmt_t.parse_binary_query_result([u8] first_packet):query_result_t! {
+    var column_count = first_packet[0] as int
+
+    // Read column definitions
+    var columns = vec_new<string>("", column_count)
+    var column_types = vec_new<u8>(0, column_count)
+    
+    for int i = 0; i < column_count; i += 1 {
+        var col_packet = self.conn.read_packet()
+        columns[i] = self.conn.parse_column_name(col_packet)
+        column_types[i] = self.parse_column_type(col_packet)
+    }
+
+    // Read EOF packet
+    var eof_packet = self.conn.read_packet()
+
+    var rows = vec_new<[string]>([], 0)
+
+    // If not EOF packet, this is the first row of data
+    if !self.conn.is_eof_packet(eof_packet) {
+        var row = self.parse_binary_row_with_types(eof_packet, column_count, column_types)
+        rows.push(row)
+    }
+
+    // Read all row data
+    for true {
+        var row_packet = self.conn.read_packet()
+
+        if self.conn.is_eof_packet(row_packet) {
+            break
+        }
+
+        var row = self.parse_binary_row_with_types(row_packet, column_count, column_types)
+        rows.push(row)
+    }
+
+    return query_result_t{
+        columns = columns,
+        rows = rows,
+    }
+}
+
+// Parse column type
+fn stmt_t.parse_column_type([u8] packet):u8 {
+    var pos = 0
+    
+    // Skip catalog, schema, table, org_table, name, org_name
+    var (_1, new_pos) = self.conn.read_length_encoded_string(packet, pos)
+    pos = new_pos
+    var (_2, new_pos2) = self.conn.read_length_encoded_string(packet, pos)
+    pos = new_pos2
+    var (_3, new_pos3) = self.conn.read_length_encoded_string(packet, pos)
+    pos = new_pos3
+    var (_4, new_pos4) = self.conn.read_length_encoded_string(packet, pos)
+    pos = new_pos4
+    var (_5, new_pos5) = self.conn.read_length_encoded_string(packet, pos)
+    pos = new_pos5
+    var (_6, new_pos6) = self.conn.read_length_encoded_string(packet, pos)
+    pos = new_pos6
+    
+    // Skip fixed length identifier (0x0c)
+    if pos < packet.len() && packet[pos] == 0x0c {
+        pos += 1
+    }
+    
+    // Skip charset (2 bytes)
+    pos += 2
+    // Skip column length (4 bytes)
+    pos += 4
+    
+    // Field type (1 byte)
+    if pos < packet.len() {
+        return packet[pos]
+    }
+    
+    // Default to string type
+    return 0xfe
+}
+
+// Parse binary row with types
+fn stmt_t.parse_binary_row_with_types([u8] packet, int column_count, [u8] column_types):[string] {
+    if packet.len() == 0 {
+        return vec_new<string>("", column_count)
+    }
+
+    // Skip packet header identifier (0x00)
+    var pos = 1
+
+    // NULL bitmap length calculation
+    var null_bitmap_len = (column_count + 7 + 2) / 8
+    if pos + null_bitmap_len > packet.len() {
+        return vec_new<string>("", column_count)
+    }
+
+    var null_bitmap = packet[pos..pos + null_bitmap_len]
+    pos += null_bitmap_len
+
+    var row = vec_new<string>("", column_count)
+
+    for int i = 0; i < column_count; i += 1 {
+        // Check NULL bitmap
+        var byte_pos = (i + 2) / 8
+        var bit_pos = (i + 2) % 8
+        if byte_pos < null_bitmap.len() && (null_bitmap[byte_pos] & (1 << bit_pos as u8)) != 0 {
+            row[i] = "NULL"
+            continue
+        }
+
+        // If position exceeds packet length, set to empty string
+        if pos >= packet.len() {
+            row[i] = ""
+            continue
+        }
+
+        // Parse data by field type
+        var field_value = ""
+        var new_pos = pos
+        
+        if i < column_types.len() {
+            var (value, next_pos) = self.parse_binary_field_by_type(packet, pos, column_types[i])
+            field_value = value
+            new_pos = next_pos
+        } else {
+            // Default string handling
+            var (length, tmp_pos) = self.conn.read_length_encoded_int(packet, pos)
+            new_pos = tmp_pos
+            if new_pos + length as int <= packet.len() {
+                field_value = packet.slice(new_pos, new_pos + length as int) as string
+                new_pos += length as int
+            }
+        }
+        
+        row[i] = field_value
+        pos = new_pos
+    }
+
+    return row
+}
+
+// Parse binary field by type
+fn stmt_t.parse_binary_field_by_type([u8] packet, int pos, u8 field_type):(string, int) {
+    match field_type {
+        MYSQL_TYPE_DECIMAL|MYSQL_TYPE_NEWDECIMAL -> {
+            // For decimal types, treat as string for now
+            var (length, new_pos) = self.conn.read_length_encoded_int(packet, pos)
+            pos = new_pos
+            if pos + length as int <= packet.len() {
+                return (packet.slice(pos, pos + length as int) as string, pos + length as int)
+            }
+        }
+        MYSQL_TYPE_TINY -> {
+            if pos + 1 <= packet.len() {
+                return (fmt.sprintf("%d", packet[pos] as i8), pos + 1)
+            }
+        }
+        MYSQL_TYPE_SHORT -> {
+            if pos + 2 <= packet.len() {
+                var val = mem.read_u16_le(packet.slice(pos, pos + 2)) catch e {break 0 as u16}
+                return (fmt.sprintf("%d", val), pos + 2)
+            }
+        }
+        MYSQL_TYPE_LONG|MYSQL_TYPE_INT24 -> {
+            if pos + 4 <= packet.len() {
+                var val = mem.read_u32_le(packet.slice(pos, pos + 4)) catch e {break 0 as u32}
+                return (fmt.sprintf("%d", val), pos + 4)
+            }
+        }
+        MYSQL_TYPE_LONGLONG -> {
+            if pos + 8 <= packet.len() {
+                var val = mem.read_u64_le(packet.slice(pos, pos + 8)) catch e {break 0 as u64}
+                return (fmt.sprintf("%d", val), pos + 8)
+            }
+        }
+        MYSQL_TYPE_FLOAT -> {
+            if pos + 4 <= packet.len() {
+                var val = mem.read_u32_le(packet.slice(pos, pos + 4)) catch e {break 0 as u32}
+                return (fmt.sprintf("%g", val as f32), pos + 4)
+            }
+        }
+        MYSQL_TYPE_DOUBLE -> {
+            if pos + 8 <= packet.len() {
+                var val = mem.read_u64_le(packet.slice(pos, pos + 8)) catch e {break 0 as u64}
+                return (fmt.sprintf("%g", val as f64), pos + 8)
+            }
+        }
+        MYSQL_TYPE_NULL -> {
+            return ("NULL", pos)
+        }
+        MYSQL_TYPE_TIMESTAMP|MYSQL_TYPE_DATE|MYSQL_TYPE_TIME|MYSQL_TYPE_DATETIME|MYSQL_TYPE_YEAR|MYSQL_TYPE_NEWDATE -> {
+            // Date/time types, treat as string
+            var (length, new_pos) = self.conn.read_length_encoded_int(packet, pos)
+            pos = new_pos
+            if pos + length as int <= packet.len() {
+                return (packet.slice(pos, pos + length as int) as string, pos + length as int)
+            }
+        }
+        MYSQL_TYPE_VARCHAR|MYSQL_TYPE_VAR_STRING|MYSQL_TYPE_STRING -> {
+            // String types
+            var (length, new_pos) = self.conn.read_length_encoded_int(packet, pos)
+            pos = new_pos
+            if pos + length as int <= packet.len() {
+                return (packet.slice(pos, pos + length as int) as string, pos + length as int)
+            }
+        }
+        MYSQL_TYPE_TINY_BLOB|MYSQL_TYPE_MEDIUM_BLOB|MYSQL_TYPE_LONG_BLOB|MYSQL_TYPE_BLOB -> {
+            // BLOB types, treat as string for now
+            var (length, new_pos) = self.conn.read_length_encoded_int(packet, pos)
+            pos = new_pos
+            if pos + length as int <= packet.len() {
+                return (packet.slice(pos, pos + length as int) as string, pos + length as int)
+            }
+        }
+        MYSQL_TYPE_BIT -> {
+            // BIT type, treat as string
+            var (length, new_pos) = self.conn.read_length_encoded_int(packet, pos)
+            pos = new_pos
+            if pos + length as int <= packet.len() {
+                return (packet.slice(pos, pos + length as int) as string, pos + length as int)
+            }
+        }
+        MYSQL_TYPE_ENUM|MYSQL_TYPE_SET -> {
+            // ENUM and SET types, treat as string
+            var (length, new_pos) = self.conn.read_length_encoded_int(packet, pos)
+            pos = new_pos
+            if pos + length as int <= packet.len() {
+                return (packet.slice(pos, pos + length as int) as string, pos + length as int)
+            }
+        }
+        MYSQL_TYPE_GEOMETRY -> {
+            // GEOMETRY type, treat as string
+            var (length, new_pos) = self.conn.read_length_encoded_int(packet, pos)
+            pos = new_pos
+            if pos + length as int <= packet.len() {
+                return (packet.slice(pos, pos + length as int) as string, pos + length as int)
+            }
+        }
+        _ -> {
+            // Unknown types, use length-encoded string
+            var (length, new_pos) = self.conn.read_length_encoded_int(packet, pos)
+            pos = new_pos
+            if pos + length as int <= packet.len() {
+                return (packet.slice(pos, pos + length as int) as string, pos + length as int)
+            }
+        }
+    }
+    
+    return ("", pos)
+}
+
 // Parse error packet
 fn conn_t.parse_error_packet([u8] packet):string {
     if packet.len() < 3 {
@@ -767,6 +1308,44 @@ fn main():void! {
     fmt.printf("\n=== Query System Information ===\n")
     r2 = c.query("SELECT NOW() as now_time, VERSION() as version, USER() as `current_user`")
     r2.dump()
+
+    // Test prepared statements
+    fmt.printf("\n=== Test Prepared Statements ===\n")
+
+    // Prepare insert statement
+    var insert_stmt = c.prepare("INSERT INTO users (name, email) VALUES (?, ?)")
+
+    // Use prepared statement to insert data
+    r = insert_stmt.execute("Zhao Liu", "zhaoliu@example.com")
+    fmt.printf("Prepared insert affected rows: %d, Last insert ID: %d\n", r.affected_rows, r.last_insert_id)
+
+    r = insert_stmt.execute("Sun Qi", "sunqi@example.com")
+    fmt.printf("Prepared insert affected rows: %d, Last insert ID: %d\n", r.affected_rows, r.last_insert_id)
+
+    // Prepare query statement
+    var select_stmt = c.prepare("SELECT * FROM users WHERE id > ?")
+
+    // Use prepared statement to query data
+    fmt.printf("\n=== Prepared Query Results (id > 1) ===\n")
+    var r3 = select_stmt.query("1")
+    r3.dump()
+
+    // Prepare update statement
+    var update_stmt = c.prepare("UPDATE users SET email = ? WHERE name = ?")
+
+    // Use prepared statement to update data
+    r = update_stmt.execute("zhaoliu_updated@example.com", "Zhao Liu")
+    fmt.printf("Prepared update affected rows: %d\n", r.affected_rows)
+
+    // View results after update
+    fmt.printf("\n=== Results After Prepared Update ===\n")
+    r2 = c.query("SELECT * FROM users")
+    r2.dump()
+
+    // Close prepared statements
+    insert_stmt.close()
+    select_stmt.close()
+    update_stmt.close()
 
     // Cleanup
     fmt.printf("\n=== Cleanup Test Data ===\n")

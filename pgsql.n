@@ -27,6 +27,16 @@ const COMMAND_COMPLETE = 67 // C
 const DATA_ROW = 68 // D
 const ERROR_RESPONSE = 69 // E
 const PASSWORD_MESSAGE = 112 // p
+const PARSE = 80 // P
+const BIND = 66 // B
+const EXECUTE = 69 // E
+const CLOSE = 67 // C
+const DESCRIBE = 68 // D
+const SYNC = 83 // S
+const PARSE_COMPLETE = 49 // 1
+const BIND_COMPLETE = 50 // 2
+const CLOSE_COMPLETE = 51 // 3
+const NO_DATA = 110 // n
 
 type scram_auth = struct{
     string username
@@ -40,16 +50,25 @@ type scram_auth = struct{
     string auth_message
 }
 
-// 查询结果类型
+// Query result type
 type query_result_t = struct {
-    [string] columns     // 列名
-    [[string]] rows      // 数据行
+    [string] columns     // Column names
+    [[string]] rows      // Data rows
 }
 
-// 执行结果类型
+// Execute result type
 type execute_result_t = struct {
-    int affected_rows    // 影响的行数
-    string command       // 执行的命令类型 (INSERT, UPDATE, DELETE 等)
+    int affected_rows    // Number of affected rows
+    string command       // Command type (INSERT, UPDATE, DELETE, etc.)
+}
+
+// Prepared statement type
+type stmt_t = struct {
+    ptr<conn_t> conn
+    string name          // Statement name
+    string query_string         // Original query string
+    int param_count      // Parameter count
+    bool closed          // Whether closed
 }
 
 type conn_t = struct{
@@ -60,6 +79,7 @@ type conn_t = struct{
     ptr<tcp.conn_t> conn
     scram_auth sa
     bool closed
+    int stmt_counter     // 语句计数器，用于生成唯一的语句名称
 }
 
 fn connect(string host, string username, string password, string database):ptr<conn_t>! {
@@ -293,18 +313,32 @@ fn conn_t.close() {
 fn conn_t.read_msg():(u8, [u8])! {
     var msg_type_buf = vec_new<u8>(0, 1)
     var len = self.conn.read(msg_type_buf)
+    if len != 1 {
+        throw errorf('failed to read message type')
+    }
 
     var msg_type = msg_type_buf[0]
 
     var len_buf = vec_new<u8>(0, 4)
     len = self.conn.read(len_buf)
+    if len != 4 {
+        throw errorf('failed to read message length')
+    }
 
     u32 msg_len = mem.read_u32_be(len_buf)
+    if msg_len < 4 {
+        throw errorf('invalid message length: %d', msg_len)
+    }
 
-    var body_buf = vec_new<u8>(0, msg_len as int - 4)
+    var body_len = msg_len as int - 4
+    if body_len == 0 {
+        return (msg_type, [])
+    }
+
+    var body_buf = vec_new<u8>(0, body_len)
     len = self.conn.read(body_buf)
-    if body_buf.len() != len {
-        throw errorf('truncate message')
+    if len != body_len {
+        throw errorf('truncate message: expected %d, got %d', body_len, len)
     }
 
     return (msg_type, body_buf)
@@ -671,6 +705,298 @@ fn conn_t.handle_execute_result():execute_result_t! {
     }
 }
 
+// Prepare statement
+fn conn_t.prepare(string query):ptr<stmt_t>! {
+    if self.closed {
+        throw errorf('db closed')
+    }
+
+    // Generate unique statement name
+    self.stmt_counter += 1
+    string stmt_name = fmt.sprintf('stmt_%d', self.stmt_counter)
+
+    // Send Parse message
+    var buf = new io.buffer()
+    buf.write_byte(PARSE)
+
+    // Calculate message length
+    var msg_content = new io.buffer()
+    msg_content.write(stmt_name as [u8])
+    msg_content.write_byte(0)
+    msg_content.write(query as [u8])
+    msg_content.write_byte(0)
+    msg_content.write([0, 0]) // Parameter type count is 0, let server infer
+
+    var msg_len = msg_content.len() + 4
+    buf.write(mem.write_u32_be(msg_len as u32))
+    buf.write(msg_content.read_all())
+
+    // Send Sync message
+    buf.write_byte(SYNC)
+    buf.write([0, 0, 0, 4]) // Sync message length is 4
+
+    self.conn.write(buf.read_all())
+
+    // Handle response
+    var param_count = 0
+    for true {
+        var (msg_type, msg_data) = self.read_msg()
+
+        if msg_type == PARSE_COMPLETE {
+            continue
+        } else if msg_type == READY_FOR_QUERY {
+            break
+        } else if msg_type == ERROR_RESPONSE {
+            var error_msg = self.parse_error_message(msg_data)
+            throw errorf('prepare error: %s', error_msg) 
+        }
+    }
+
+    return new stmt_t(
+        conn = self,
+        name = stmt_name,
+        query_string = query,
+        param_count = param_count,
+        closed = false,
+    )
+}
+
+
+// Prepared statement execute method
+fn stmt_t.execute(...[string] args):execute_result_t! {
+    if self.closed {
+        throw errorf('statement closed')
+    }
+    if self.conn.closed {
+        throw errorf('db closed')
+    }
+
+    // Send Bind message
+    var buf = new io.buffer()
+    buf.write_byte(BIND)
+
+    var msg_content = new io.buffer()
+    msg_content.write_byte(0) // portal name (unnamed)
+    msg_content.write(self.name as [u8])
+    msg_content.write_byte(0) // statement name
+
+    // Parameter format codes (0 = text, 1 = binary)
+    msg_content.write([0, 0]) // Parameter format count is 0, use default format
+
+    // Parameter values
+    msg_content.write(mem.write_u16_be(args.len() as u16)) // Parameter count
+    for arg in args {
+        var arg_bytes = arg as [u8]
+        msg_content.write(mem.write_u32_be(arg_bytes.len() as u32)) // Parameter length
+        msg_content.write(arg_bytes) // Parameter value
+    }
+
+    // Result format codes
+    msg_content.write([0, 0]) // Result format count is 0, use default format
+
+    var msg_len = msg_content.len() + 4
+    buf.write(mem.write_u32_be(msg_len as u32))
+    buf.write(msg_content.read_all())
+
+    // Send Execute message
+    buf.write_byte(EXECUTE)
+    var exec_content = new io.buffer()
+    exec_content.write_byte(0) // portal name (unnamed)
+    exec_content.write([0, 0, 0, 0]) // Maximum rows (0 = unlimited)
+    var exec_len = exec_content.len() + 4
+    buf.write(mem.write_u32_be(exec_len as u32))
+    buf.write(exec_content.read_all())
+
+    // Send Sync message
+    buf.write_byte(SYNC)
+    buf.write([0, 0, 0, 4])
+
+    self.conn.conn.write(buf.read_all())
+
+    // Handle response
+    return self.handle_execute_response()
+}
+
+// Prepared statement query method
+fn stmt_t.query(...[string] args):query_result_t! {
+    if self.closed {
+        throw errorf('statement closed')
+    }
+    if self.conn.closed {
+        throw errorf('db closed')
+    }
+
+    // Send Bind message
+    var buf = new io.buffer()
+    buf.write_byte(BIND)
+
+    var msg_content = new io.buffer()
+    msg_content.write_byte(0) // portal name (unnamed)
+    msg_content.write(self.name as [u8])
+    msg_content.write_byte(0) // statement name
+
+    // Parameter format codes
+    msg_content.write([0, 0]) // Parameter format count is 0
+
+    // Parameter values
+    msg_content.write(mem.write_u16_be(args.len() as u16)) // Parameter count
+    for arg in args {
+        var arg_bytes = arg as [u8]
+        msg_content.write(mem.write_u32_be(arg_bytes.len() as u32)) // Parameter length
+        msg_content.write(arg_bytes) // Parameter value
+    }
+
+    // Result format codes
+    msg_content.write([0, 0]) // Result format count is 0
+
+    var msg_len = msg_content.len() + 4
+    buf.write(mem.write_u32_be(msg_len as u32))
+    buf.write(msg_content.read_all())
+
+    // Send Execute message
+    buf.write_byte(EXECUTE)
+    var exec_content = new io.buffer()
+    exec_content.write_byte(0) // portal name (unnamed)
+    exec_content.write([0, 0, 0, 0]) // Maximum rows (0 = unlimited)
+    var exec_len = exec_content.len() + 4
+    buf.write(mem.write_u32_be(exec_len as u32))
+    buf.write(exec_content.read_all())
+
+    // Send Sync message
+    buf.write_byte(SYNC)
+    buf.write([0, 0, 0, 4])
+
+    self.conn.conn.write(buf.read_all())
+
+    // Handle response
+    return self.handle_query_response()
+}
+
+// Close prepared statement
+fn stmt_t.close():void! {
+    if self.closed {
+        return
+    }
+    if self.conn.closed {
+        self.closed = true
+        return
+    }
+
+    // Send Close message
+    var buf = new io.buffer()
+    buf.write_byte(CLOSE)
+
+    var msg_content = new io.buffer()
+    msg_content.write_byte('S'[0]) // 'S' for statement
+    msg_content.write(self.name as [u8])
+    msg_content.write_byte(0)
+
+    var msg_len = msg_content.len() + 4
+    buf.write(mem.write_u32_be(msg_len as u32))
+    buf.write(msg_content.read_all())
+
+    // Send Sync message
+    buf.write_byte(SYNC)
+    buf.write([0, 0, 0, 4])
+
+    self.conn.conn.write(buf.read_all())
+
+    // Handle response
+    for true {
+        var (msg_type, _) = self.conn.read_msg()
+        if msg_type == CLOSE_COMPLETE {
+            continue
+        } else if msg_type == ERROR_RESPONSE || msg_type == READY_FOR_QUERY {
+            break
+        }
+    }
+
+    self.closed = true
+}
+
+// Handle execute response
+fn stmt_t.handle_execute_response():execute_result_t! {
+    string command = ''
+    int affected_rows = 0
+
+    for true {
+        var (msg_type, msg_data) = self.conn.read_msg()
+
+        match msg_type {
+            BIND_COMPLETE -> {
+                continue
+            }
+            COMMAND_COMPLETE -> {
+                var command_tag = msg_data.slice(0, msg_data.len() - 1) as string
+                var parts = command_tag.split(' ')
+                if parts.len() > 0 {
+                    command = parts[0]
+                }
+                if parts.len() > 1 {
+                    affected_rows = parts[parts.len() - 1].to_int() catch e {break 0}
+                }
+            }
+            READY_FOR_QUERY -> {
+                return execute_result_t{
+                    command = command,
+                    affected_rows = affected_rows,
+                }
+            }
+            ERROR_RESPONSE -> {
+                var error_msg = self.conn.parse_error_message(msg_data)
+                throw errorf('execute error: %s', error_msg)
+            }
+            _ -> {}
+        }
+    }
+
+    return execute_result_t{
+        command = command,
+        affected_rows = affected_rows,
+    }
+}
+
+// Handle query response
+fn stmt_t.handle_query_response():query_result_t! {
+    [string] columns = []
+    [[string]] rows = []
+
+    for true {
+        var (msg_type, msg_data) = self.conn.read_msg()
+
+        match msg_type {
+            BIND_COMPLETE -> {
+                continue
+            }
+            ROW_DESCRIPTION -> {
+                columns = self.conn.parse_row_description(msg_data)
+            }
+            DATA_ROW -> {
+                var row = self.conn.parse_data_row(msg_data)
+                rows.push(row)
+            }
+            COMMAND_COMPLETE -> {
+                continue
+            }
+            READY_FOR_QUERY -> {
+                return query_result_t{
+                    columns = columns,
+                    rows = rows,
+                }
+            }
+            ERROR_RESPONSE -> {
+                var error_msg = self.conn.parse_error_message(msg_data)
+                throw errorf('query error: %s', error_msg)
+            }
+            _ -> {}
+        }
+    }
+
+    return query_result_t{
+        columns = columns,
+        rows = rows,
+    }
+}
 
 fn query_result_t.dump():void {
     if self.columns.len() == 0 && self.rows.len() == 0 {
@@ -764,12 +1090,12 @@ fn main():void! {
     var version = client.query('SELECT version();')
     version.dump()
 
-    // Create users table - 使用 execute API
+    // Create users table - using execute API
     var drop_result = client.execute('DROP TABLE IF EXISTS users;')
 
     var create_result = client.execute('CREATE TABLE users (id SERIAL PRIMARY KEY, name VARCHAR(100), email VARCHAR(100), age INTEGER);')
 
-    // Insert data - 使用 execute API
+    // Insert data - using execute API
     var insert1 = client.execute("INSERT INTO users (name, email, age) VALUES ('John', 'john@example.com', 25);")
     println('affected rows: ', insert1.affected_rows)
 
@@ -781,33 +1107,86 @@ fn main():void! {
 
     println('Data inserted successfully')
 
-    // Query all users - 使用 query API
+    // Query all users - using query API
     println('\nQuery all users:')
     var all_users = client.query('SELECT * FROM users ORDER BY id;')
     all_users.dump()
 
-    // Query by condition - 使用 query API
+    // Query by condition - using query API
     println('\nQuery users older than 25:')
     var filtered_users = client.query('SELECT * FROM users WHERE age > 25 ORDER BY id;')
     filtered_users.dump()
 
-    // Update data - 使用 execute API
+    // Update data - using execute API
     var update_result = client.execute("UPDATE users SET age = 26 WHERE name = 'John';")
     println('\nUpdated John\'s age to 26, Affected rows: ', update_result.affected_rows)
 
-    // Delete data - 使用 execute API
+    // Delete data - using execute API
     var delete_result = client.execute("DELETE FROM users WHERE name = 'Alice';")
     println('Deleted Alice\'s record: ', delete_result.affected_rows)
 
-    // View final user list - 使用 query API
+    // View final user list - using query API
     println('\nFinal user list:')
     var final_users = client.query('SELECT * FROM users ORDER BY id;')
     final_users.dump()
 
-    // Statistics - 使用 query API
+    // Statistics - using query API
     println('\nStatistics:')
     var avg_users = client.query('SELECT COUNT(*) as total_users, AVG(age) as average_age FROM users;')
     avg_users.dump()
+
+    // Test prepared statement functionality
+    println('\n=== Test Prepared Statement Functionality ===')
+
+    // Prepare insert statement
+    var insert_stmt = client.prepare('INSERT INTO users (name, email, age) VALUES ($1, $2, $3)')
+
+    // Use prepared statement to insert data
+    var prep_insert1 = insert_stmt.execute('David', 'david@example.com', '32')
+    println('Prepared insert affected rows: ', prep_insert1.affected_rows)
+
+    var prep_insert2 = insert_stmt.execute('Emma', 'emma@example.com', '27')
+    println('Prepared insert affected rows: ', prep_insert2.affected_rows)
+
+    // Prepare query statement
+    var select_stmt = client.prepare('SELECT * FROM users WHERE age > $1 ORDER BY id')
+
+    // Use prepared statement to query data
+    println('\nPrepared query results (age > 25):')
+    var prep_query = select_stmt.query('25')
+    prep_query.dump()
+
+    // Prepare update statement
+    var update_stmt = client.prepare('UPDATE users SET email = $1 WHERE name = $2')
+
+    // Use prepared statement to update data
+    var prep_update = update_stmt.execute('david_updated@example.com', 'David')
+    println('\nPrepared update affected rows: ', prep_update.affected_rows)
+
+    // View updated results
+    println('\nUpdated user list:')
+    var updated_users = client.query('SELECT * FROM users ORDER BY id;')
+    updated_users.dump()
+
+    // Prepare delete statement
+    var delete_stmt = client.prepare('DELETE FROM users WHERE age < $1')
+
+    // Use prepared statement to delete data
+    var prep_delete = delete_stmt.execute('30')
+    println('\nPrepared delete affected rows: ', prep_delete.affected_rows)
+
+    // View final results
+    println('\nFinal user list:')
+    var final_result = client.query('SELECT * FROM users ORDER BY id;')
+    final_result.dump()
+
+    // Close prepared statements
+    insert_stmt.close()
+    select_stmt.close()
+    update_stmt.close()
+    delete_stmt.close()
+
+    println('\nPrepared statements closed')
 
     client.close()
 }
