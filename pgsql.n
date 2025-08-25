@@ -219,6 +219,7 @@ fn conn_t.parse_row_description([u8] data):[string] {
 
     u16 field_count = mem.read_u16_be(data.slice(0, 2)) catch e {
         panic(e.msg())
+        0
     }
     [string] columns = []
 
@@ -246,6 +247,7 @@ fn conn_t.parse_data_row([u8] data):[string] {
 
     u16 field_count = mem.read_u16_be(data.slice(0, 2)) catch e {
         panic(e.msg())
+        0
     }
     [string] values = []
 
@@ -257,6 +259,7 @@ fn conn_t.parse_data_row([u8] data):[string] {
 
         i32 field_len = mem.read_i32_be(data.slice(offset, offset + 4)) catch e {
             panic(e.msg())
+            0
         }
         offset += 4
 
@@ -682,7 +685,7 @@ fn conn_t.handle_execute_result():execute_result_t! {
                     command = parts[0]
                 }
                 if parts.len() > 1 {
-                    affected_rows = parts[parts.len() - 1].to_int() catch e {break 0}
+                    affected_rows = parts[parts.len() - 1].to_int() catch e {0}
                 }
             }
             READY_FOR_QUERY -> {
@@ -933,7 +936,7 @@ fn stmt_t.handle_execute_response():execute_result_t! {
                     command = parts[0]
                 }
                 if parts.len() > 1 {
-                    affected_rows = parts[parts.len() - 1].to_int() catch e {break 0}
+                    affected_rows = parts[parts.len() - 1].to_int() catch e {0}
                 }
             }
             READY_FOR_QUERY -> {

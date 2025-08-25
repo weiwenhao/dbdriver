@@ -505,11 +505,11 @@ fn conn_t.parse_execute_result([u8] packet):execute_result_t {
     var warnings = 0 as u16
 
     if pos + 2 <= packet.len() {
-        status_flags = mem.read_u16_le(packet.slice(pos, pos + 2)) catch e {break 0 as u16}
+        status_flags = mem.read_u16_le(packet.slice(pos, pos + 2)) catch e {0 as u16}
         pos += 2
     }
     if pos + 2 <= packet.len() {
-        warnings = mem.read_u16_le(packet.slice(pos, pos + 2)) catch e {break 0 as u16}
+        warnings = mem.read_u16_le(packet.slice(pos, pos + 2)) catch e {0 as u16}
         pos += 2
     }
 
@@ -684,7 +684,7 @@ fn conn_t.read_length_encoded_int([u8] data, int pos):(u64, int) {
             if pos + 2 >= data.len() {
                 return (0, pos)
             }
-            var value = mem.read_u16_le(data.slice(pos + 1, pos + 3)) catch e {break 0 as u16}
+            var value = mem.read_u16_le(data.slice(pos + 1, pos + 3)) catch e {0}
             return (value as u64, pos + 3)
         }
         0xfd -> {
@@ -698,7 +698,7 @@ fn conn_t.read_length_encoded_int([u8] data, int pos):(u64, int) {
             if pos + 8 >= data.len() {
                 return (0, pos)
             }
-            var value = mem.read_u64_le(data.slice(pos + 1, pos + 9)) catch e {break 0 as u64}
+            var value = mem.read_u64_le(data.slice(pos + 1, pos + 9)) catch e {0}
             return (value, pos + 9)
         }
         _ -> {
@@ -714,11 +714,11 @@ fn conn_t.parse_prepare_response([u8] packet, string query):ptr<stmt_t>! {
     }
 
     var pos = 1 // Skip status identifier
-    var statement_id = mem.read_u32_le(packet.slice(pos, pos + 4)) catch e {break 0 as u32}
+    var statement_id = mem.read_u32_le(packet.slice(pos, pos + 4)) catch e {0}
     pos += 4
-    var column_count = mem.read_u16_le(packet.slice(pos, pos + 2)) catch e {break 0 as u16}
+    var column_count = mem.read_u16_le(packet.slice(pos, pos + 2)) catch e {0}
     pos += 2
-    var param_count = mem.read_u16_le(packet.slice(pos, pos + 2)) catch e {break 0 as u16}
+    var param_count = mem.read_u16_le(packet.slice(pos, pos + 2)) catch e {0}
 
     var stmt = new stmt_t(
         conn = self,
@@ -877,7 +877,7 @@ fn stmt_t.encode_length_encoded_int(u64 value):[u8] {
     } else if value < 65536 {
         var result = vec_new<u8>(0, 3)
         result[0] = 0xfc
-        var val_bytes = mem.write_u16_le(value as u16) catch e {break []}
+        var val_bytes = mem.write_u16_le(value as u16) catch e {[]}
         result.slice(1, 3).copy(val_bytes)
         return result
     } else if value < 16777216 {
@@ -890,7 +890,7 @@ fn stmt_t.encode_length_encoded_int(u64 value):[u8] {
     } else {
         var result = vec_new<u8>(0, 9)
         result[0] = 0xfe
-        var val_bytes = mem.write_u64_le(value) catch e {break []}
+        var val_bytes = mem.write_u64_le(value) catch e {[]}
         result.slice(1, 9).copy(val_bytes)
         return result
     }
@@ -1054,31 +1054,31 @@ fn stmt_t.parse_binary_field_by_type([u8] packet, int pos, u8 field_type):(strin
         }
         MYSQL_TYPE_SHORT -> {
             if pos + 2 <= packet.len() {
-                var val = mem.read_u16_le(packet.slice(pos, pos + 2)) catch e {break 0 as u16}
+                var val = mem.read_u16_le(packet.slice(pos, pos + 2)) catch e {0}
                 return (fmt.sprintf("%d", val), pos + 2)
             }
         }
         MYSQL_TYPE_LONG|MYSQL_TYPE_INT24 -> {
             if pos + 4 <= packet.len() {
-                var val = mem.read_u32_le(packet.slice(pos, pos + 4)) catch e {break 0 as u32}
+                var val = mem.read_u32_le(packet.slice(pos, pos + 4)) catch e {0}
                 return (fmt.sprintf("%d", val), pos + 4)
             }
         }
         MYSQL_TYPE_LONGLONG -> {
             if pos + 8 <= packet.len() {
-                var val = mem.read_u64_le(packet.slice(pos, pos + 8)) catch e {break 0 as u64}
+                var val = mem.read_u64_le(packet.slice(pos, pos + 8)) catch e {0}
                 return (fmt.sprintf("%d", val), pos + 8)
             }
         }
         MYSQL_TYPE_FLOAT -> {
             if pos + 4 <= packet.len() {
-                var val = mem.read_u32_le(packet.slice(pos, pos + 4)) catch e {break 0 as u32}
+                var val = mem.read_u32_le(packet.slice(pos, pos + 4)) catch e {0}
                 return (fmt.sprintf("%g", val as f32), pos + 4)
             }
         }
         MYSQL_TYPE_DOUBLE -> {
             if pos + 8 <= packet.len() {
-                var val = mem.read_u64_le(packet.slice(pos, pos + 8)) catch e {break 0 as u64}
+                var val = mem.read_u64_le(packet.slice(pos, pos + 8)) catch e {0}
                 return (fmt.sprintf("%g", val as f64), pos + 8)
             }
         }
@@ -1152,7 +1152,7 @@ fn conn_t.parse_error_packet([u8] packet):string {
         return "Error packet format incorrect"
     }
 
-    var error_code = mem.read_u16_le(packet.slice(1, 3)) catch e {break 0 as u16}
+    var error_code = mem.read_u16_le(packet.slice(1, 3)) catch e {0}
     var error_message = ""
 
     if packet.len() > 3 {
