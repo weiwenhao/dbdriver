@@ -53,7 +53,7 @@ type scram_auth = struct{
 // Query result type
 type query_result_t = struct {
     [string] columns     // Column names
-    [[string]] rows      // Data rows
+    [[string?]] rows      // Data rows
 }
 
 // Execute result type
@@ -240,7 +240,7 @@ fn conn_t.parse_row_description([u8] data):[string] {
     return columns
 }
 
-fn conn_t.parse_data_row([u8] data):[string] {
+fn conn_t.parse_data_row([u8] data):[string?] {
     if data.len() < 2 {
         return []
     }
@@ -249,7 +249,7 @@ fn conn_t.parse_data_row([u8] data):[string] {
         panic(e.msg())
         0
     }
-    [string] values = []
+    [string?] values = []
 
     var offset = 2
     for int i = 0; i < field_count as int && offset < data.len(); i += 1 {
@@ -264,7 +264,7 @@ fn conn_t.parse_data_row([u8] data):[string] {
         offset += 4
 
         if field_len == -1 {
-            values.push('NULL')
+            values.push(null)
         } else if offset + field_len as int <= data.len() {
             values.push(data.slice(offset, offset + field_len as int) as string)
             offset += field_len as int
@@ -627,7 +627,7 @@ fn conn_t.execute(string sql):execute_result_t! {
 
 fn conn_t.handle_query_result():query_result_t! {
     [string] columns = []
-    [[string]] rows = []
+    [[string?]] rows = []
     var command_complete = false
 
     for true {
@@ -962,7 +962,7 @@ fn stmt_t.handle_execute_response():execute_result_t! {
 // Handle query response
 fn stmt_t.handle_query_response():query_result_t! {
     [string] columns = []
-    [[string]] rows = []
+    [[string?]] rows = []
 
     for true {
         var (msg_type, msg_data) = self.conn.read_msg()
@@ -1002,83 +1002,90 @@ fn stmt_t.handle_query_response():query_result_t! {
 }
 
 fn query_result_t.dump():void {
-    if self.columns.len() == 0 && self.rows.len() == 0 {
-        fmt.printf('No query results\n')
-        return
-    }
-
-    // 构建完整的结果集（包含列名和数据行）
-    [[string]] full_result = []
-    if self.columns.len() > 0 {
-        full_result.push(self.columns)
-    }
-    full_result.append(self.rows)
-
-    if full_result.len() == 0 {
-        fmt.printf('No query results\n')
+    if self.columns.len() == 0 {
+        fmt.printf("Empty result set\n")
         return
     }
 
     // Calculate maximum width for each column
-    [int] col_widths = []
-    for int i = 0; i < full_result[0].len(); i += 1 {
-        col_widths.push(0)
+    var col_widths = vec_new<int>(0, self.columns.len())
+    for i, col in self.columns {
+        col_widths[i] = col.len()
     }
 
-    for row in full_result {
-        for int i = 0; i < row.len(); i += 1 {
-            if row[i].len() > col_widths[i] {
-                col_widths[i] = row[i].len()
-            }
-        }
-    }
-
-    // Print header separator
-    fmt.printf('+')
-    for width in col_widths {
-        for int j = 0; j < width + 2; j += 1 {
-            fmt.printf('-')
-        }
-        fmt.printf('+')
-    }
-    fmt.printf('\n')
-
-    // Print each row
-    for int row_index = 0; row_index < full_result.len(); row_index += 1 {
-        var row = full_result[row_index]
-        fmt.printf('|')
-        for int i = 0; i < row.len(); i += 1 {
-            fmt.printf(' %s ', row[i])
-            var padding = col_widths[i] - row[i].len()
-            for int j = 0; j < padding; j += 1 {
-                fmt.printf(' ')
-            }
-            fmt.printf('|')
-        }
-        fmt.printf('\n')
-
-        // Print separator after header
-        if row_index == 0 && self.columns.len() > 0 {
-            fmt.printf('+')
-            for width in col_widths {
-                for int j = 0; j < width + 2; j += 1 {
-                    fmt.printf('-')
+    for row in self.rows {
+        for i, cell in row {
+            if cell is string {
+                if i < col_widths.len() && cell.len() > col_widths[i] {
+                    col_widths[i] = cell.len()
                 }
-                fmt.printf('+')
+            } else {
+                    col_widths[i] = 'NULL'.len()
             }
-            fmt.printf('\n')
         }
     }
 
-    // Print bottom separator
-    fmt.printf('+')
+    // Print table header
+    fmt.printf("+")
     for width in col_widths {
         for int j = 0; j < width + 2; j += 1 {
-            fmt.printf('-')
+            fmt.printf("-")
         }
-        fmt.printf('+')
+        fmt.printf("+")
     }
-    fmt.printf('\n')
+    fmt.printf("\n")
+
+    fmt.printf("|")
+    for int i = 0; i < self.columns.len(); i += 1 {
+        fmt.printf(" %s ", self.columns[i])
+        var padding = col_widths[i] - self.columns[i].len()
+        for int j = 0; j < padding; j += 1 {
+            fmt.printf(" ")
+        }
+        fmt.printf("|")
+    }
+    fmt.printf("\n")
+
+    fmt.printf("+")
+    for width in col_widths {
+        for int j = 0; j < width + 2; j += 1 {
+            fmt.printf("-")
+        }
+        fmt.printf("+")
+    }
+    fmt.printf("\n")
+
+    // Print data rows
+    for row in self.rows {
+        fmt.printf("|")
+        for i, cell in row {
+            var cell_len = 4
+            if cell is string {
+                cell_len = cell.len()
+            }
+
+            if i < col_widths.len() {
+                fmt.printf(" %v ", row[i])
+                var padding = col_widths[i] - cell_len
+                for int j = 0; j < padding; j += 1 {
+                    fmt.printf(" ")
+                }
+                fmt.printf("|")
+            }
+        }
+        fmt.printf("\n")
+    }
+
+    fmt.printf("+")
+    for width in col_widths {
+        for int j = 0; j < width + 2; j += 1 {
+            fmt.printf("-")
+        }
+        fmt.printf("+")
+    }
+    fmt.printf("\n")
+
+    fmt.printf("(%d rows)\n", self.rows.len())
 }
 
 fn main():void! {
@@ -1105,7 +1112,7 @@ fn main():void! {
     var insert2 = client.execute("INSERT INTO users (name, email, age) VALUES ('Alice', 'alice@example.com', 30);")
     println('affected rows: ', insert2.affected_rows)
 
-    var insert3 = client.execute("INSERT INTO users (name, email, age) VALUES ('Bob', 'bob@example.com', 28);")
+    var insert3 = client.execute("INSERT INTO users (name, email, age) VALUES ('Bob', NULL, 28);")
     println('affected rows: ', insert3.affected_rows)
 
     println('Data inserted successfully')

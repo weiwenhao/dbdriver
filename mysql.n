@@ -82,7 +82,7 @@ type execute_result_t = struct {
 // Query result type
 type query_result_t = struct {
     [string] columns     // Column names
-    [[string]] rows      // Data rows
+    [[string?]] rows      // Data rows
 }
 
 // Prepared statement type
@@ -541,7 +541,7 @@ fn conn_t.parse_query_result([u8] first_packet):query_result_t! {
     // Read EOF packet
     var eof_packet = self.read_packet()
 
-    var rows = vec_new<[string]>([], 0)
+    var rows = vec_new<[string?]>([], 0)
 
     // If not EOF packet, this is the first row of data
     if !self.is_eof_packet(eof_packet) {
@@ -591,14 +591,13 @@ fn conn_t.parse_column_name([u8] packet):string {
 }
 
 // Parse row data
-fn conn_t.parse_row([u8] packet, int column_count):[string] {
-    var row = vec_new<string>("", column_count)
+fn conn_t.parse_row([u8] packet, int column_count):[string?] {
+    var row = vec_new<string?>(null, column_count)
     var pos = 0
 
     for int i = 0; i < column_count && pos < packet.len(); i += 1 {
         if packet[pos] == 0xfb {
-            // NULL value
-            row[i] = "NULL"
+            row[i] = null
             pos += 1
         } else {
             // Read length-encoded string
@@ -913,7 +912,7 @@ fn stmt_t.parse_binary_query_result([u8] first_packet):query_result_t! {
     // Read EOF packet
     var eof_packet = self.conn.read_packet()
 
-    var rows = vec_new<[string]>([], 0)
+    var rows = vec_new<[string?]>([], 0)
 
     // If not EOF packet, this is the first row of data
     if !self.conn.is_eof_packet(eof_packet) {
@@ -977,9 +976,9 @@ fn stmt_t.parse_column_type([u8] packet):u8 {
 }
 
 // Parse binary row with types
-fn stmt_t.parse_binary_row_with_types([u8] packet, int column_count, [u8] column_types):[string] {
+fn stmt_t.parse_binary_row_with_types([u8] packet, int column_count, [u8] column_types):[string?] {
     if packet.len() == 0 {
-        return vec_new<string>("", column_count)
+        return vec_new<string?>("", column_count)
     }
 
     // Skip packet header identifier (0x00)
@@ -988,20 +987,20 @@ fn stmt_t.parse_binary_row_with_types([u8] packet, int column_count, [u8] column
     // NULL bitmap length calculation
     var null_bitmap_len = (column_count + 7 + 2) / 8
     if pos + null_bitmap_len > packet.len() {
-        return vec_new<string>("", column_count)
+        return vec_new<string?>("", column_count)
     }
 
     var null_bitmap = packet[pos..pos + null_bitmap_len]
     pos += null_bitmap_len
 
-    var row = vec_new<string>("", column_count)
+    var row = vec_new<string?>("", column_count)
 
     for int i = 0; i < column_count; i += 1 {
         // Check NULL bitmap
         var byte_pos = (i + 2) / 8
         var bit_pos = (i + 2) % 8
         if byte_pos < null_bitmap.len() && (null_bitmap[byte_pos] & (1 << bit_pos as u8)) != 0 {
-            row[i] = "NULL"
+            row[i] = null
             continue
         }
 
@@ -1181,8 +1180,12 @@ fn query_result_t.dump():void {
 
     for row in self.rows {
         for i, cell in row {
-            if i < col_widths.len() && cell.len() > col_widths[i] {
-                col_widths[i] = cell.len()
+            if cell is string {
+                if i < col_widths.len() && cell.len() > col_widths[i] {
+                    col_widths[i] = cell.len()
+                }
+            } else {
+                    col_widths[i] = 'NULL'.len()
             }
         }
     }
@@ -1221,9 +1224,14 @@ fn query_result_t.dump():void {
     for row in self.rows {
         fmt.printf("|")
         for i, cell in row {
+            var cell_len = 4
+            if cell is string {
+                cell_len = cell.len()
+            }
+
             if i < col_widths.len() {
-                fmt.printf(" %s ", row[i])
-                var padding = col_widths[i] - cell.len()
+                fmt.printf(" %v ", row[i])
+                var padding = col_widths[i] - cell_len
                 for int j = 0; j < padding; j += 1 {
                     fmt.printf(" ")
                 }
@@ -1276,7 +1284,7 @@ fn main():void! {
     r = c.execute("INSERT INTO users (name, email) VALUES ('Li Si', 'lisi@example.com')")
     fmt.printf("Affected rows: %d, Last insert ID: %d\n", r.affected_rows, r.last_insert_id)
 
-    r = c.execute("INSERT INTO users (name, email) VALUES ('Wang Wu', 'wangwu@example.com')")
+    r = c.execute("INSERT INTO users (name, email) VALUES ('Wang Wu', NULL)")
     fmt.printf("Affected rows: %d, Last insert ID: %d\n", r.affected_rows, r.last_insert_id)
 
     // Query data
