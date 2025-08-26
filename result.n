@@ -1,0 +1,279 @@
+import fmt
+import json
+import reflect
+import unsafe
+import runtime
+
+type query_t = struct{
+    [string] columns
+    [[string?]] rows
+}
+
+type execute_t = struct {
+    int affected_rows    // Number of affected rows
+    int last_insert_id   // Last inserted ID
+}
+
+
+fn query_t.dump():void {
+    if self.columns.len() == 0 {
+        ("Empty result set\n")
+        return
+    }
+
+    // Calculate maximum width for each column
+    var col_widths = vec_new<int>(0, self.columns.len())
+    for i, col in self.columns {
+        col_widths[i] = col.len()
+    }
+
+    for row in self.rows {
+        for i, cell in row {
+            if cell is string {
+                if i < col_widths.len() && cell.len() > col_widths[i] {
+                    col_widths[i] = cell.len()
+                }
+            } else {
+                    col_widths[i] = 'NULL'.len()
+            }
+        }
+    }
+
+    // Print table header
+    fmt.printf("+")
+    for width in col_widths {
+        for int j = 0; j < width + 2; j += 1 {
+            fmt.printf("-")
+        }
+        fmt.printf("+")
+    }
+    fmt.printf("\n")
+
+    fmt.printf("|")
+    for int i = 0; i < self.columns.len(); i += 1 {
+        fmt.printf(" %s ", self.columns[i])
+        var padding = col_widths[i] - self.columns[i].len()
+        for int j = 0; j < padding; j += 1 {
+            fmt.printf(" ")
+        }
+        fmt.printf("|")
+    }
+    fmt.printf("\n")
+
+    fmt.printf("+")
+    for width in col_widths {
+        for int j = 0; j < width + 2; j += 1 {
+            fmt.printf("-")
+        }
+        fmt.printf("+")
+    }
+    fmt.printf("\n")
+
+    // Print data rows
+    for row in self.rows {
+        fmt.printf("|")
+        for i, cell in row {
+            var cell_len = 4
+            if cell is string {
+                cell_len = cell.len()
+            }
+
+            if i < col_widths.len() {
+                fmt.printf(" %v ", row[i])
+                var padding = col_widths[i] - cell_len
+                for int j = 0; j < padding; j += 1 {
+                    fmt.printf(" ")
+                }
+                fmt.printf("|")
+            }
+        }
+        fmt.printf("\n")
+    }
+
+    fmt.printf("+")
+    for width in col_widths {
+        for int j = 0; j < width + 2; j += 1 {
+            fmt.printf("-")
+        }
+        fmt.printf("+")
+    }
+    fmt.printf("\n")
+
+    fmt.printf("(%d rows)\n", self.rows.len())
+}
+
+fn deserialize<T>(query_t result):[T]! {
+    var t = reflect.typeof_hash(@reflect_hash(T))
+    var list = vec_new<T>(@default(T), result.rows.len())
+
+    for i, row in result.rows {
+        var val = @default(T) // nullable is null
+        var p = &val as anyptr
+
+        if t.kind == reflect.MAP {
+            scan_map<T>(result.columns, result.rows[i], p, t)
+        } else if t.kind == reflect.STRUCT {
+            scan_struct<T>(result.columns, result.rows[i], p, t)
+        } else {
+            throw errorf("scan type not support, only support map or struct")
+        }
+
+        list[i] = val
+    }
+    return list
+}
+
+fn scan_map([string] columns, [string?] row, anyptr p, reflect.type_t t):void! {
+    anyptr v = unsafe.ptr_to<anyptr>(p)
+    var rv = v as rawptr<reflect.map_t>
+
+    var val_type = reflect.typeof_hash(t.hashes[1])
+
+    for i,col in columns {
+        var val_p = runtime.map_assign(v, &col as anyptr)
+        scan_value(row[i], val_p, val_type)
+    }
+}
+
+fn scan_struct([string] columns, [string?] row, anyptr p, reflect.type_t t):void! {
+    {string:reflect.field_t} m = {}
+    for field in t.fields {
+        m[field.name] = field
+    }
+
+    for i,col in columns {
+        var field = m[col]
+        var field_ptr = p + field.offset as anyptr
+        var filed_type = reflect.typeof_hash(field.hash)
+
+        scan_value(row[i], field_ptr, filed_type)
+    }
+}
+
+fn scan_value(string? value_option, anyptr p, reflect.type_t t):void! {
+    // handle nullable
+    if value_option is null {
+        if t.kind == reflect.UNION && ((t.hashes.len() == 2 && t.hashes[1] == json.null_hash) || t.hashes.len() == 0){
+            any temp = null
+            unsafe.ptr_copy<any>(p, &temp)
+            return
+        }
+
+        throw errorf('cannot scan to null')
+    }
+
+    var value = value_option as string
+
+    match t.kind {
+        reflect.BOOL -> {
+            var bool_val = value == "1" || value.to_lower() == "true"
+            unsafe.ptr_copy<bool>(p, &bool_val)
+        }
+        reflect.U8 -> {
+            var u8_val = value.to_int() as u8
+            unsafe.ptr_copy<u8>(p, &u8_val)
+        }
+        reflect.U16 -> {
+            var u16_val = value.to_int() as u16
+            unsafe.ptr_copy<u16>(p, &u16_val)
+        }
+        reflect.U32 -> {
+            var u32_val = value.to_int() as u32
+            unsafe.ptr_copy<u32>(p, &u32_val)
+        }
+        reflect.U64 -> {
+            var u64_val = value.to_int() as u64
+            unsafe.ptr_copy<u64>(p, &u64_val)
+        }
+        reflect.I8 -> {
+            var i8_val = value.to_int() as i8
+            unsafe.ptr_copy<i8>(p, &i8_val)
+        }
+        reflect.I16 -> {
+            var i16_val = value.to_int() as i16
+            unsafe.ptr_copy<i16>(p, &i16_val)
+        }
+        reflect.I32 -> {
+            var i32_val = value.to_int() as i32
+            unsafe.ptr_copy<i32>(p, &i32_val)
+        }
+        reflect.I64 -> {
+            var i64_val = value.to_int() as i64
+            unsafe.ptr_copy<i64>(p, &i64_val)
+        }
+        reflect.F32 -> {
+            var f32_val = value.to_float() as f32
+            unsafe.ptr_copy<f32>(p, &f32_val)
+        }
+        reflect.F64 -> {
+            var f64_val = value.to_float()
+            unsafe.ptr_copy<f64>(p, &f64_val)
+        }
+        reflect.STRING -> {
+            unsafe.ptr_copy<string>(p, &value)
+        }
+        reflect.UNION -> {
+             if t.hashes.len() == 2 && t.hashes[1] == json.null_hash {
+                scan_nullable(value, p, t)
+                return
+            }
+
+            if t.hashes.len() > 0 { // not any
+                throw errorf('only `any` type deserialize is supported')
+            }
+            var any_val = scan_any(value)
+            unsafe.ptr_copy<any>(p, &any_val)
+        }
+        // json str field
+        reflect.VEC|reflect.MAP|reflect.STRUCT -> {
+            var d = new json.deserialize_t(data = value as [u8])
+            d.parser(p, t)
+        }
+        _ -> {
+            throw errorf('unsupported type `%s` for database value parsing', t.to_string())
+        }
+    }
+}
+
+fn scan_nullable(string value, anyptr p, reflect.type_t t):void! {
+    anyptr v = unsafe.ptr_to<anyptr>(p)
+    var rv = v as rawptr<reflect.union_t>
+
+    var target_p = &rv.value as anyptr
+    if t.hashes.len() != 2 {
+        throw errorf('only support nullable union type')
+    }
+
+
+    var hash = t.hashes[0]
+    var target_type = reflect.typeof_hash(hash)
+    
+    match target_type.kind {
+        reflect.VEC -> {
+            var element_type = reflect.typeof_hash(target_type.hashes[0])
+            rv.value = runtime.vec_cap(hash, element_type.hash, 0)
+        }
+        reflect.MAP -> {
+            var key_type = reflect.typeof_hash(target_type.hashes[0])
+            var value_type = reflect.typeof_hash(target_type.hashes[1])
+            rv.value = runtime.map_new(hash, key_type.hash, value_type.hash)
+        }
+        reflect.STRUCT -> {
+            rv.value = runtime.gc_malloc(hash)
+        }
+        _ -> {}
+    }
+
+    scan_value(value, target_p, target_type)
+    rv.rtype = target_type.r
+}
+
+fn scan_any(string value):any! {
+    // is number?
+    var f = value.to_float() catch e {
+        // other judge to string
+        return value
+    }
+
+    return f
+}

@@ -1,5 +1,5 @@
-name = "dbdrive"
-version = "0.4.0"
+name = "db"
+version = "0.5.0"
 authors = ["weiwenhao <wwhacker@qq.com>"]
 license = "MIT"
 type = "lib"

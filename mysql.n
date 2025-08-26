@@ -6,6 +6,7 @@ import crypto.sha256
 import time
 import libc
 import base64
+import db.result
 
 // MySQL protocol constants
 const CLIENT_PROTOCOL_41 = 0x00000200
@@ -68,21 +69,6 @@ type handshake_packet_t = struct {
     string server_version
     [u8] auth_data
     string auth_plugin
-}
-
-// Execute result type
-type execute_result_t = struct {
-    u64 affected_rows    // Number of affected rows
-    u64 last_insert_id   // Last inserted ID
-    u16 status_flags     // Status flags
-    u16 warnings         // Number of warnings
-    string info          // Additional information
-}
-
-// Query result type
-type query_result_t = struct {
-    [string] columns     // Column names
-    [[string?]] rows      // Data rows
 }
 
 // Prepared statement type
@@ -353,7 +339,7 @@ fn conn_t.caching_sha2_auth(string password, [u8] auth_data):[u8] {
 }
 
 // Execute non-query statements (INSERT, UPDATE, DELETE, etc.)
-fn conn_t.execute(string query):execute_result_t! {
+fn conn_t.execute(string query):result.execute_t! {
     if self.closed {
         throw errorf("Connection is closed")
     }
@@ -387,7 +373,7 @@ fn conn_t.execute(string query):execute_result_t! {
 }
 
 // Execute query statements (SELECT, etc.)
-fn conn_t.query(string query):query_result_t! {
+fn conn_t.query(string query):result.query_t! {
     if self.closed {
         throw errorf("Connection is closed")
     }
@@ -409,7 +395,7 @@ fn conn_t.query(string query):query_result_t! {
     match packet[0] {
         PACKET_OK -> {
             // Possibly a query with no results
-            return query_result_t{columns = [], rows = []}
+            return result.query_t{columns = [], rows = []}
         }
         PACKET_ERROR -> {
             var error_msg = self.parse_error_packet(packet)
@@ -493,7 +479,7 @@ fn conn_t.close() {
 }
 
 // Parse execute result
-fn conn_t.parse_execute_result([u8] packet):execute_result_t {
+fn conn_t.parse_execute_result([u8] packet):result.execute_t {
     var pos = 1 // Skip OK identifier
 
     var (affected_rows, new_pos) = self.read_length_encoded_int(packet, pos)
@@ -518,17 +504,14 @@ fn conn_t.parse_execute_result([u8] packet):execute_result_t {
         info = packet.slice(pos, packet.len()) as string
     }
 
-    return execute_result_t{
+    return result.execute_t{
         affected_rows = affected_rows,
         last_insert_id = last_insert_id,
-        status_flags = status_flags,
-        warnings = warnings,
-        info = info,
     }
 }
 
 // Parse query result
-fn conn_t.parse_query_result([u8] first_packet):query_result_t! {
+fn conn_t.parse_query_result([u8] first_packet):result.query_t! {
     var column_count = first_packet[0] as int
 
     // Read column definitions
@@ -561,7 +544,7 @@ fn conn_t.parse_query_result([u8] first_packet):query_result_t! {
         rows.push(row)
     }
 
-    return query_result_t{
+    return result.query_t{
         columns = columns,
         rows = rows,
     }
@@ -669,7 +652,7 @@ fn conn_t.read_length_encoded_string([u8] data, int pos):(string, int) {
 }
 
 // Read length-encoded integer
-fn conn_t.read_length_encoded_int([u8] data, int pos):(u64, int) {
+fn conn_t.read_length_encoded_int([u8] data, int pos):(int, int) {
     if pos >= data.len() {
         return (0, pos)
     }
@@ -684,24 +667,24 @@ fn conn_t.read_length_encoded_int([u8] data, int pos):(u64, int) {
                 return (0, pos)
             }
             var value = mem.read_u16_le(data.slice(pos + 1, pos + 3)) catch e {0}
-            return (value as u64, pos + 3)
+            return (value as int, pos + 3)
         }
         0xfd -> {
             if pos + 3 >= data.len() {
                 return (0, pos)
             }
-            var value = data[pos + 1] as u64 | (data[pos + 2] as u64 << 8) | (data[pos + 3] as u64 << 16)
+            var value = data[pos + 1] as int | (data[pos + 2] as int << 8) | (data[pos + 3] as int << 16)
             return (value, pos + 4)
         }
         0xfe -> {
             if pos + 8 >= data.len() {
                 return (0, pos)
             }
-            var value = mem.read_u64_le(data.slice(pos + 1, pos + 9)) catch e {0}
+            var value = mem.read_i64_le(data.slice(pos + 1, pos + 9)) catch e {0}
             return (value, pos + 9)
         }
         _ -> {
-            return (first as u64, pos + 1)
+            return (first as int, pos + 1)
         }
     }
 }
@@ -749,7 +732,7 @@ fn conn_t.parse_prepare_response([u8] packet, string query):ptr<stmt_t>! {
 }
 
 // Execute prepared statement
-fn stmt_t.execute(...[string] args):execute_result_t! {
+fn stmt_t.execute(...[string] args):result.execute_t! {
     if self.conn.closed {
         throw errorf("Connection is closed")
     }
@@ -780,7 +763,7 @@ fn stmt_t.execute(...[string] args):execute_result_t! {
 }
 
 // Query with prepared statement
-fn stmt_t.query(...[string] args):query_result_t! {
+fn stmt_t.query(...[string] args):result.query_t! {
     if self.conn.closed {
         throw errorf("Connection is closed")
     }
@@ -798,7 +781,7 @@ fn stmt_t.query(...[string] args):query_result_t! {
 
     match packet[0] {
         PACKET_OK -> {
-            return query_result_t{columns = [], rows = []}
+            return result.query_t{columns = [], rows = []}
         }
         PACKET_ERROR -> {
             var error_msg = self.conn.parse_error_packet(packet)
@@ -896,7 +879,7 @@ fn stmt_t.encode_length_encoded_int(u64 value):[u8] {
 }
 
 // Parse binary query result (for prepared statements)
-fn stmt_t.parse_binary_query_result([u8] first_packet):query_result_t! {
+fn stmt_t.parse_binary_query_result([u8] first_packet):result.query_t! {
     var column_count = first_packet[0] as int
 
     // Read column definitions
@@ -932,7 +915,7 @@ fn stmt_t.parse_binary_query_result([u8] first_packet):query_result_t! {
         rows.push(row)
     }
 
-    return query_result_t{
+    return result.query_t{
         columns = columns,
         rows = rows,
     }
@@ -1166,92 +1149,6 @@ fn conn_t.parse_error_packet([u8] packet):string {
 }
 
 // Print query results in table format
-fn query_result_t.dump():void {
-    if self.columns.len() == 0 {
-        fmt.printf("Empty result set\n")
-        return
-    }
-
-    // Calculate maximum width for each column
-    var col_widths = vec_new<int>(0, self.columns.len())
-    for i, col in self.columns {
-        col_widths[i] = col.len()
-    }
-
-    for row in self.rows {
-        for i, cell in row {
-            if cell is string {
-                if i < col_widths.len() && cell.len() > col_widths[i] {
-                    col_widths[i] = cell.len()
-                }
-            } else {
-                    col_widths[i] = 'NULL'.len()
-            }
-        }
-    }
-
-    // Print table header
-    fmt.printf("+")
-    for width in col_widths {
-        for int j = 0; j < width + 2; j += 1 {
-            fmt.printf("-")
-        }
-        fmt.printf("+")
-    }
-    fmt.printf("\n")
-
-    fmt.printf("|")
-    for int i = 0; i < self.columns.len(); i += 1 {
-        fmt.printf(" %s ", self.columns[i])
-        var padding = col_widths[i] - self.columns[i].len()
-        for int j = 0; j < padding; j += 1 {
-            fmt.printf(" ")
-        }
-        fmt.printf("|")
-    }
-    fmt.printf("\n")
-
-    fmt.printf("+")
-    for width in col_widths {
-        for int j = 0; j < width + 2; j += 1 {
-            fmt.printf("-")
-        }
-        fmt.printf("+")
-    }
-    fmt.printf("\n")
-
-    // Print data rows
-    for row in self.rows {
-        fmt.printf("|")
-        for i, cell in row {
-            var cell_len = 4
-            if cell is string {
-                cell_len = cell.len()
-            }
-
-            if i < col_widths.len() {
-                fmt.printf(" %v ", row[i])
-                var padding = col_widths[i] - cell_len
-                for int j = 0; j < padding; j += 1 {
-                    fmt.printf(" ")
-                }
-                fmt.printf("|")
-            }
-        }
-        fmt.printf("\n")
-    }
-
-    fmt.printf("+")
-    for width in col_widths {
-        for int j = 0; j < width + 2; j += 1 {
-            fmt.printf("-")
-        }
-        fmt.printf("+")
-    }
-    fmt.printf("\n")
-
-    fmt.printf("(%d rows)\n", self.rows.len())
-}
 
 fn main():void! {
     fmt.printf("=== MySQL API Refactoring Test ===\n")
@@ -1301,6 +1198,18 @@ fn main():void! {
     fmt.printf("\n=== Query Updated Data ===\n")
     r2 = c.query("SELECT * FROM users")
     r2.dump()
+
+    // deserialize result set
+    fmt.printf("\n=== Deserialize Result Set ===\n")
+    type user_t = struct{
+        int id
+        string name
+        string? email
+    }
+    var list = result.deserialize<user_t>(r2) 
+    for item in list {
+        fmt.printf("ID: %d, Name: %s, Email: %v\n", item.id, item.name, item.email)
+    }
 
     // Delete data
     fmt.printf("\n=== Delete User Data ===\n")

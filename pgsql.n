@@ -10,6 +10,7 @@ import libc
 import base64
 import syscall
 import co
+import db.result
 
 u32 startup_msg = 0x00030000
 
@@ -48,18 +49,6 @@ type scram_auth = struct{
     string client_first_msg_bare
     string server_first_message
     string auth_message
-}
-
-// Query result type
-type query_result_t = struct {
-    [string] columns     // Column names
-    [[string?]] rows      // Data rows
-}
-
-// Execute result type
-type execute_result_t = struct {
-    int affected_rows    // Number of affected rows
-    string command       // Command type (INSERT, UPDATE, DELETE, etc.)
 }
 
 // Prepared statement type
@@ -585,7 +574,7 @@ fn conn_t.wait_for_ready():void! {
     }
 }
 
-fn conn_t.query(string sql):query_result_t! {
+fn conn_t.query(string sql):result.query_t! {
     if self.closed {
         throw errorf('db closed')
     }
@@ -605,7 +594,7 @@ fn conn_t.query(string sql):query_result_t! {
     return self.handle_query_result()
 }
 
-fn conn_t.execute(string sql):execute_result_t! {
+fn conn_t.execute(string sql):result.execute_t! {
     if self.closed {
         throw errorf('db closed')
     }
@@ -625,7 +614,7 @@ fn conn_t.execute(string sql):execute_result_t! {
     return self.handle_execute_result()
 }
 
-fn conn_t.handle_query_result():query_result_t! {
+fn conn_t.handle_query_result():result.query_t! {
     [string] columns = []
     [[string?]] rows = []
     var command_complete = false
@@ -646,7 +635,7 @@ fn conn_t.handle_query_result():query_result_t! {
             }
             READY_FOR_QUERY -> {
                 // Ready for next query
-                return query_result_t{
+                return result.query_t{
                     columns = columns,
                     rows = rows,
                 }
@@ -656,7 +645,7 @@ fn conn_t.handle_query_result():query_result_t! {
                 throw errorf('query error: %s', error_msg)
             }
             _ -> {
-                return query_result_t{
+                return result.query_t{
                     columns = columns,
                     rows = rows,
                 }
@@ -664,13 +653,13 @@ fn conn_t.handle_query_result():query_result_t! {
         }
     }
 
-    return query_result_t{
+    return result.query_t{
         columns = columns,
         rows = rows,
     }
 }
 
-fn conn_t.handle_execute_result():execute_result_t! {
+fn conn_t.handle_execute_result():result.execute_t! {
     string command = ''
     int affected_rows = 0
 
@@ -689,8 +678,7 @@ fn conn_t.handle_execute_result():execute_result_t! {
                 }
             }
             READY_FOR_QUERY -> {
-                return execute_result_t{
-                    command = command,
+                return result.execute_t{
                     affected_rows = affected_rows,
                 }
             }
@@ -702,8 +690,7 @@ fn conn_t.handle_execute_result():execute_result_t! {
         }
     }
 
-    return execute_result_t{
-        command = command,
+    return result.execute_t{
         affected_rows = affected_rows,
     }
 }
@@ -766,7 +753,7 @@ fn conn_t.prepare(string query):ptr<stmt_t>! {
 
 
 // Prepared statement execute method
-fn stmt_t.execute(...[string] args):execute_result_t! {
+fn stmt_t.execute(...[string] args):result.execute_t! {
     if self.closed {
         throw errorf('statement closed')
     }
@@ -821,7 +808,7 @@ fn stmt_t.execute(...[string] args):execute_result_t! {
 }
 
 // Prepared statement query method
-fn stmt_t.query(...[string] args):query_result_t! {
+fn stmt_t.query(...[string] args):result.query_t! {
     if self.closed {
         throw errorf('statement closed')
     }
@@ -918,7 +905,7 @@ fn stmt_t.close():void! {
 }
 
 // Handle execute response
-fn stmt_t.handle_execute_response():execute_result_t! {
+fn stmt_t.handle_execute_response():result.execute_t! {
     string command = ''
     int affected_rows = 0
 
@@ -940,8 +927,7 @@ fn stmt_t.handle_execute_response():execute_result_t! {
                 }
             }
             READY_FOR_QUERY -> {
-                return execute_result_t{
-                    command = command,
+                return result.execute_t{
                     affected_rows = affected_rows,
                 }
             }
@@ -953,14 +939,13 @@ fn stmt_t.handle_execute_response():execute_result_t! {
         }
     }
 
-    return execute_result_t{
-        command = command,
+    return result.execute_t{
         affected_rows = affected_rows,
     }
 }
 
 // Handle query response
-fn stmt_t.handle_query_response():query_result_t! {
+fn stmt_t.handle_query_response():result.query_t! {
     [string] columns = []
     [[string?]] rows = []
 
@@ -982,7 +967,7 @@ fn stmt_t.handle_query_response():query_result_t! {
                 continue
             }
             READY_FOR_QUERY -> {
-                return query_result_t{
+                return result.query_t{
                     columns = columns,
                     rows = rows,
                 }
@@ -995,97 +980,10 @@ fn stmt_t.handle_query_response():query_result_t! {
         }
     }
 
-    return query_result_t{
+    return result.query_t{
         columns = columns,
         rows = rows,
     }
-}
-
-fn query_result_t.dump():void {
-    if self.columns.len() == 0 {
-        fmt.printf("Empty result set\n")
-        return
-    }
-
-    // Calculate maximum width for each column
-    var col_widths = vec_new<int>(0, self.columns.len())
-    for i, col in self.columns {
-        col_widths[i] = col.len()
-    }
-
-    for row in self.rows {
-        for i, cell in row {
-            if cell is string {
-                if i < col_widths.len() && cell.len() > col_widths[i] {
-                    col_widths[i] = cell.len()
-                }
-            } else {
-                    col_widths[i] = 'NULL'.len()
-            }
-        }
-    }
-
-    // Print table header
-    fmt.printf("+")
-    for width in col_widths {
-        for int j = 0; j < width + 2; j += 1 {
-            fmt.printf("-")
-        }
-        fmt.printf("+")
-    }
-    fmt.printf("\n")
-
-    fmt.printf("|")
-    for int i = 0; i < self.columns.len(); i += 1 {
-        fmt.printf(" %s ", self.columns[i])
-        var padding = col_widths[i] - self.columns[i].len()
-        for int j = 0; j < padding; j += 1 {
-            fmt.printf(" ")
-        }
-        fmt.printf("|")
-    }
-    fmt.printf("\n")
-
-    fmt.printf("+")
-    for width in col_widths {
-        for int j = 0; j < width + 2; j += 1 {
-            fmt.printf("-")
-        }
-        fmt.printf("+")
-    }
-    fmt.printf("\n")
-
-    // Print data rows
-    for row in self.rows {
-        fmt.printf("|")
-        for i, cell in row {
-            var cell_len = 4
-            if cell is string {
-                cell_len = cell.len()
-            }
-
-            if i < col_widths.len() {
-                fmt.printf(" %v ", row[i])
-                var padding = col_widths[i] - cell_len
-                for int j = 0; j < padding; j += 1 {
-                    fmt.printf(" ")
-                }
-                fmt.printf("|")
-            }
-        }
-        fmt.printf("\n")
-    }
-
-    fmt.printf("+")
-    for width in col_widths {
-        for int j = 0; j < width + 2; j += 1 {
-            fmt.printf("-")
-        }
-        fmt.printf("+")
-    }
-    fmt.printf("\n")
-
-    fmt.printf("(%d rows)\n", self.rows.len())
 }
 
 fn main():void! {
