@@ -88,7 +88,7 @@ type conn_t = struct {
 }
 
 // Create connection with specified configuration
-fn connect(string host, string username, string password):ptr<conn_t>! {
+fn connect(string host, string username, string password, string database):ptr<conn_t>! {
     var conn = tcp.connect_timeout(host, 10000)
 
     var client = new conn_t(conn, seq_id = 0, closed = false)
@@ -98,6 +98,11 @@ fn connect(string host, string username, string password):ptr<conn_t>! {
 
     // Set charset to utf8mb4 to support full UTF-8 character set including emoji
     client.set_charset("utf8mb4")
+
+    if database != "" {
+        client.execute("CREATE DATABASE IF NOT EXISTS test_db")
+        client.execute("USE test_db")
+    }
 
     return client
 }
@@ -1155,22 +1160,13 @@ fn main():void! {
     fmt.printf("\n")
 
     // Create connection
-    var c = connect("127.0.0.1:3306", "root", "root")
+    var c = connect("127.0.0.1:3306", "root", "root", "test_db")
 
     fmt.printf("Connection successful!\n")
 
-    // Create and use test database
-    fmt.printf("\n=== Create Test Database ===\n")
-    var r = c.execute("CREATE DATABASE IF NOT EXISTS test_db")
-    fmt.printf("Affected rows: %d\n", r.affected_rows)
-
-    fmt.printf("\n=== Use Test Database ===\n")
-    r = c.execute("USE test_db")
-    fmt.printf("Affected rows: %d\n", r.affected_rows)
-
     // Create user table
     fmt.printf("\n=== Create User Table ===\n")
-    r = c.execute("CREATE TABLE IF NOT EXISTS users (id INT PRIMARY KEY AUTO_INCREMENT, name VARCHAR(50), email VARCHAR(100))")
+    var r = c.execute("CREATE TABLE IF NOT EXISTS users (id INT PRIMARY KEY AUTO_INCREMENT, name VARCHAR(50), email VARCHAR(100))")
     fmt.printf("Affected rows: %d\n", r.affected_rows)
 
     // Insert data
