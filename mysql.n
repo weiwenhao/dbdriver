@@ -100,8 +100,8 @@ fn connect(string host, string username, string password, string database):ptr<c
     client.set_charset("utf8mb4")
 
     if database != "" {
-        client.execute("CREATE DATABASE IF NOT EXISTS test_db")
-        client.execute("USE test_db")
+        client.execute(fmt.sprintf("CREATE DATABASE IF NOT EXISTS %s", database))
+        client.execute(fmt.sprintf("USE %s", database))
     }
 
     return client
