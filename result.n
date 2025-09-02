@@ -142,7 +142,9 @@ fn scan_struct([string] columns, [string?] row, anyptr p, ptr<reflect.type_t> t)
     }
 
     for i,col in columns {
-        var field = m[col]
+        var field = m[col] catch e {
+            continue
+        }
         var field_ptr = p + field.offset as anyptr
         var filed_type = reflect.typeof_hash(field.hash)
 
