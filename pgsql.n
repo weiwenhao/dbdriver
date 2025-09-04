@@ -753,7 +753,7 @@ fn conn_t.prepare(string query):ptr<stmt_t>! {
 
 
 // Prepared statement execute method
-fn stmt_t.execute(...[string] args):result.execute_t! {
+fn stmt_t.execute(...[any] args):result.execute_t! {
     if self.closed {
         throw errorf('statement closed')
     }
@@ -776,7 +776,8 @@ fn stmt_t.execute(...[string] args):result.execute_t! {
     // Parameter values
     msg_content.write(mem.write_u16_be(args.len() as u16)) // Parameter count
     for arg in args {
-        var arg_bytes = arg as [u8]
+        var arg_str = fmt.sprintf('%v', arg)
+        var arg_bytes = arg_str as [u8]
         msg_content.write(mem.write_u32_be(arg_bytes.len() as u32)) // Parameter length
         msg_content.write(arg_bytes) // Parameter value
     }
@@ -808,7 +809,7 @@ fn stmt_t.execute(...[string] args):result.execute_t! {
 }
 
 // Prepared statement query method
-fn stmt_t.query(...[string] args):result.query_t! {
+fn stmt_t.query(...[any] args):result.query_t! {
     if self.closed {
         throw errorf('statement closed')
     }
@@ -831,7 +832,8 @@ fn stmt_t.query(...[string] args):result.query_t! {
     // Parameter values
     msg_content.write(mem.write_u16_be(args.len() as u16)) // Parameter count
     for arg in args {
-        var arg_bytes = arg as [u8]
+        var arg_str = fmt.sprintf('%v', arg)
+        var arg_bytes = arg_str as [u8]
         msg_content.write(mem.write_u32_be(arg_bytes.len() as u32)) // Parameter length
         msg_content.write(arg_bytes) // Parameter value
     }
@@ -1050,10 +1052,10 @@ fn main():void! {
     var insert_stmt = client.prepare('INSERT INTO users (name, email, age) VALUES ($1, $2, $3)')
 
     // Use prepared statement to insert data
-    var prep_insert1 = insert_stmt.execute('David', 'david@example.com', '32')
+    var prep_insert1 = insert_stmt.execute('David', 'david@example.com', 32)
     println('Prepared insert affected rows: ', prep_insert1.affected_rows)
 
-    var prep_insert2 = insert_stmt.execute('Emma', 'emma@example.com', '27')
+    var prep_insert2 = insert_stmt.execute('Emma', 'emma@example.com', 27)
     println('Prepared insert affected rows: ', prep_insert2.affected_rows)
 
     // Prepare query statement
@@ -1061,7 +1063,7 @@ fn main():void! {
 
     // Use prepared statement to query data
     println('\nPrepared query results (age > 25):')
-    var prep_query = select_stmt.query('25')
+    var prep_query = select_stmt.query(25)
     prep_query.dump()
 
     // Prepare update statement
@@ -1080,7 +1082,7 @@ fn main():void! {
     var delete_stmt = client.prepare('DELETE FROM users WHERE age < $1')
 
     // Use prepared statement to delete data
-    var prep_delete = delete_stmt.execute('30')
+    var prep_delete = delete_stmt.execute(30)
     println('\nPrepared delete affected rows: ', prep_delete.affected_rows)
 
     // View final results
