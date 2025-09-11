@@ -3,6 +3,8 @@ import net.tcp
 import fmt
 import mem
 import crypto.sha256
+import crypto.rsa
+import crypto.types
 import time
 import libc
 import base64
@@ -34,6 +36,16 @@ const AUTH_CACHING_SHA2 = "caching_sha2_password"
 // Authentication status
 const AUTH_SUCCESS = 0x03
 const AUTH_FAIL = 0x04
+
+// caching_sha2_password authentication status
+const AUTH_MORE_DATA = 0x01
+const AUTH_FAST_PATH = 0x03
+const AUTH_FULL_AUTH = 0x04
+
+// caching_sha2_password request types
+const REQUEST_PUBLIC_KEY = 0x02
+const FAST_AUTH_SUCCESS = 0x03
+const PERFORM_FULL_AUTH = 0x04
 
 // MySQL field types - complete definition
 const MYSQL_TYPE_DECIMAL = 0x00
@@ -85,13 +97,14 @@ type conn_t = struct {
     ptr<tcp.conn_t> conn
     u8 seq_id
     bool closed
+    [u8] auth_data  // Store auth_data for full authentication
 }
 
 // Create connection with specified configuration
 fn connect(string host, string username, string password, string database):ptr<conn_t>! {
     var conn = tcp.connect_timeout(host, 10000)
 
-    var client = new conn_t(conn, seq_id = 0, closed = false)
+    var client = new conn_t(conn, seq_id = 0, closed = false, auth_data = [])
 
     // Execute authentication process
     client.authenticate(username, password)
@@ -111,6 +124,9 @@ fn connect(string host, string username, string password, string database):ptr<c
 fn conn_t.authenticate(string username, string password):void! {
     // Read handshake packet
     var handshake = self.read_handshake()
+
+    // Store auth_data for potential full authentication
+    self.auth_data = handshake.auth_data
 
     // Send authentication response
     self.send_auth_response(username, password, handshake)
@@ -203,17 +219,20 @@ fn conn_t.send_auth_response(string username, string password, handshake_packet_
 }
 
 // Generate authentication response
-fn conn_t.generate_auth_response(string password, [u8] auth_data, string auth_plugin):[u8] {
+fn conn_t.generate_auth_response(string password, [u8] auth_data, string auth_plugin):[u8]! {
     if password == "" {
         return []
     }
 
     match auth_plugin {
-        AUTH_CACHING_SHA2 -> {
+        'caching_sha2_password' -> {
             return self.caching_sha2_auth(password, auth_data)
         }
-        _ -> {
+        'mysql_native_password' -> {
             return self.native_password_auth(password, auth_data)
+        }
+        _ -> {
+            throw errorf('unknown auth plugin: ', auth_plugin)
         }
     }
 }
@@ -267,7 +286,7 @@ fn conn_t.handle_auth_result(string password):void! {
             throw errorf(error_msg)
         }
         PACKET_AUTH -> {
-            self.handle_caching_sha2_auth(packet)
+            self.handle_caching_sha2_auth(packet, password)
         }
         PACKET_EOF -> {
             throw errorf("Server requested authentication method switch, not supported in this example")
@@ -278,14 +297,60 @@ fn conn_t.handle_auth_result(string password):void! {
     }
 }
 
+// Request RSA public key from server
+fn conn_t.request_public_key():[u8]! {
+    // Send public key request
+    [u8] request_packet = [REQUEST_PUBLIC_KEY]
+    self.write_packet(request_packet)
+
+    // Read public key response
+    var response = self.read_packet()
+    if response.len() == 0 {
+        throw errorf("Empty public key response")
+    }
+
+    if response[0] == PACKET_ERROR {
+        var error_msg = self.parse_error_packet(response)
+        throw errorf("Failed to get public key: %s", error_msg)
+    }
+
+    // Check if this is an AUTH_MORE_DATA packet containing public key
+    if response[0] != AUTH_MORE_DATA {
+        throw errorf("Expected AUTH_MORE_DATA packet for public key, got: 0x%02x", response[0])
+    }
+
+    // The public key is in the response packet starting from byte 1
+    if response.len() <= 1 {
+        throw errorf("Invalid public key response format")
+    }
+
+    return response[1.. response.len()]
+}
+
+// RSA encrypt password for caching_sha2_password authentication
+fn conn_t.rsa_encrypt_password(string password, [u8] seed, [u8] public_key_pem):[u8]! {
+    var plain = vec_new<u8>(0, password.len() + 1)
+    plain.copy(password as [u8])
+
+    for i, v in plain {
+        var j  = i % seed.len()
+        plain[i] ^= seed[j]
+    }
+    
+    // Parse RSA public key from PEM format
+    var pk = rsa.public_key_from_pem(public_key_pem)
+    var encrypted = pk.encrypt_oaep(rsa.SHA1, plain, null)
+    return encrypted
+}
+
 // Handle caching_sha2_password authentication
-fn conn_t.handle_caching_sha2_auth([u8] packet):void! {
+fn conn_t.handle_caching_sha2_auth([u8] packet, string password):void! {
     if packet.len() <= 1 {
         throw errorf("caching_sha2_password authentication packet format error")
     }
 
     match packet[1] {
-        AUTH_SUCCESS -> {
+        FAST_AUTH_SUCCESS -> {
             // Fast authentication successful, read final OK packet
             var final_packet = self.read_packet()
             if final_packet.len() > 0 && final_packet[0] == PACKET_OK {
@@ -293,12 +358,55 @@ fn conn_t.handle_caching_sha2_auth([u8] packet):void! {
             }
             throw errorf("Expected to receive final OK packet")
         }
-        AUTH_FAIL -> {
-            throw errorf("Fast authentication failed")
+        PERFORM_FULL_AUTH -> {
+            // Fast authentication failed, need to perform full authentication
+            self.perform_full_authentication(password, packet)
         }
         _ -> {
-            throw errorf("Full authentication required, but RSA encryption not supported in this example")
+            throw errorf("Unknown caching_sha2_password authentication status: 0x%02x", packet[1])
         }
+    }
+}
+
+// Perform full authentication for caching_sha2_password
+fn conn_t.perform_full_authentication(string password, [u8] initial_packet):void! {
+    // Extract auth_data from the initial handshake (stored in connection context)
+    var auth_data = self.auth_data
+    
+    if auth_data.len() == 0 {
+        throw errorf("No auth_data available for full authentication")
+    }
+    
+    // Check if we're in a secure connection (TLS or Unix socket)
+    // For this implementation, we assume non-secure connection and use RSA encryption
+    
+    // Request server's RSA public key
+    var public_key_pem = self.request_public_key()
+    
+    if public_key_pem.len() == 0 {
+        throw errorf("Failed to obtain server public key")
+    }
+    
+    // Encrypt password with RSA OAEP
+    var encrypted_password = self.rsa_encrypt_password(password, auth_data, public_key_pem)
+    
+    // Send encrypted password
+    self.write_packet(encrypted_password)
+    
+    // Read authentication result - should be an OK packet
+    var response = self.read_packet()
+    if response.len() == 0 {
+        throw errorf("Empty full authentication response")
+    }
+    
+    if response[0] == PACKET_OK {
+        // Full authentication successful
+        return
+    } else if response[0] == PACKET_ERROR {
+        var error_msg = self.parse_error_packet(response)
+        throw errorf("Full authentication failed: %s", error_msg)
+    } else {
+        throw errorf("Unexpected full authentication response: 0x%02x", response[0])
     }
 }
 
@@ -323,24 +431,23 @@ fn conn_t.native_password_auth(string password, [u8] auth_data):[u8] {
 }
 
 // caching_sha2_password authentication
-fn conn_t.caching_sha2_auth(string password, [u8] auth_data):[u8] {
-    if password == "" {
+fn conn_t.caching_sha2_auth(string password, [u8] scramble):[u8] {
+    if password.len() == 0 {
         return []
     }
 
-    var hash1 = sha256.new().update(password as [u8]).finish()
-    var hash2 = sha256.new().update(hash1).finish()
+    // XOR(SHA256(password), SHA256(SHA256(SHA256(password)), scramble))
+    var message1 = sha256.new().update(password as [u8]).finish()
+    var message1_hash = sha256.new().update(message1).finish()
 
-    var combined = hash2.concat(auth_data)
 
-    var hash3 = sha256.new().update(combined).finish()
+    var message2 = sha256.new().update(message1_hash).update(scramble).finish()
 
-    var result = vec_new<u8>(0, hash1.len())
-    for int i = 0; i < hash1.len(); i += 1 {
-        result[i] = hash1[i] ^ hash3[i]
+    for i,v in message1 {
+        message1[i] ^= message2[i]
     }
 
-    return result
+    return message1
 }
 
 // Execute non-query statements (INSERT, UPDATE, DELETE, etc.)
@@ -353,7 +460,7 @@ fn conn_t.execute(string query):result.execute_t! {
 
     var query_packet = vec_new<u8>(0, 1 + query.len())
     query_packet[0] = COM_QUERY
-    query_packet.slice(1, query_packet.len()).copy(query as [u8])
+    query_packet[1..query_packet.len()].copy(query as [u8])
 
     self.write_packet(query_packet)
 
@@ -387,7 +494,7 @@ fn conn_t.query(string query):result.query_t! {
 
     var query_packet = vec_new<u8>(0, 1 + query.len())
     query_packet[0] = COM_QUERY
-    query_packet.slice(1, query_packet.len()).copy(query as [u8])
+    query_packet[1..query_packet.len()].copy(query as [u8])
 
     self.write_packet(query_packet)
 
@@ -422,7 +529,7 @@ fn conn_t.prepare(string query):ptr<stmt_t>! {
 
     var prepare_packet = vec_new<u8>(0, 1 + query.len())
     prepare_packet[0] = COM_STMT_PREPARE
-    prepare_packet.slice(1, prepare_packet.len()).copy(query as [u8])
+    prepare_packet[1..prepare_packet.len()].copy(query as [u8])
 
     self.write_packet(prepare_packet)
 
@@ -447,7 +554,7 @@ fn conn_t.set_charset(string charset):void! {
 
     var query_packet = vec_new<u8>(0, 1 + query.len())
     query_packet[0] = COM_QUERY
-    query_packet.slice(1, query_packet.len()).copy(query as [u8])
+    query_packet[1..query_packet.len()].copy(query as [u8])
 
     self.write_packet(query_packet)
 
@@ -496,17 +603,17 @@ fn conn_t.parse_execute_result([u8] packet):result.execute_t {
     var warnings = 0 as u16
 
     if pos + 2 <= packet.len() {
-        status_flags = mem.read_u16_le(packet.slice(pos, pos + 2)) catch e {0 as u16}
+        status_flags = mem.read_u16_le(packet[pos..pos + 2]) catch e {0 as u16}
         pos += 2
     }
     if pos + 2 <= packet.len() {
-        warnings = mem.read_u16_le(packet.slice(pos, pos + 2)) catch e {0 as u16}
+        warnings = mem.read_u16_le(packet[pos..pos + 2]) catch e {0 as u16}
         pos += 2
     }
 
     var info = ""
     if pos < packet.len() {
-        info = packet.slice(pos, packet.len()) as string
+        info = packet[pos..packet.len()] as string
     }
 
     return result.execute_t{
