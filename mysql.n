@@ -942,6 +942,16 @@ fn stmt_t.build_execute_packet([any] args):[u8]! {
         // NULL bitmap
         var null_bitmap_len = (args.len() + 7) / 8
         var null_bitmap = vec_new<u8>(0, null_bitmap_len)
+        
+        // Fill NULL bitmap - mark NULL values
+        for i,arg in args {
+            if args[i] is null {
+                var byte_index = i / 8
+                var bit_index = i % 8
+                null_bitmap[byte_index] = null_bitmap[byte_index] | (1 << bit_index as u8)
+            }
+        }
+        
         packet.append(null_bitmap)
 
         // New parameter binding flag
@@ -950,6 +960,9 @@ fn stmt_t.build_execute_packet([any] args):[u8]! {
         // Parameter types
         for arg in args {
             match arg {
+                is null -> {
+                    packet.append([MYSQL_TYPE_NULL, 0x00]) // MYSQL_TYPE_NULL
+                }
                 is string -> {
                     packet.append([MYSQL_TYPE_STRING, 0x00]) // MYSQL_TYPE_STRING
                 }
@@ -980,9 +993,12 @@ fn stmt_t.build_execute_packet([any] args):[u8]! {
             }
         }
 
-        // Parameter values
+        // Parameter values - skip NULL values as per MySQL protocol
         for arg in args {
             match arg {
+                is null -> {
+                    // NULL values are handled by NULL bitmap, no data written
+                }
                 is string -> {
                     var str_bytes = arg as [u8]
                     var length_bytes = self.encode_length_encoded_int(str_bytes.len() as u64)
@@ -1412,7 +1428,7 @@ fn main():void! {
     r = insert_stmt.execute("Zhao Liu", "zhaoliu@example.com", 35)
     fmt.printf("Prepared insert affected rows: %d, Last insert ID: %d\n", r.affected_rows, r.last_insert_id)
 
-    r = insert_stmt.execute("Sun Qi", "sunqi@example.com", 22)
+    r = insert_stmt.execute("Sun Qi", null, 22)
     fmt.printf("Prepared insert affected rows: %d, Last insert ID: %d\n", r.affected_rows, r.last_insert_id)
 
     // Prepare query statement
