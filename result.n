@@ -107,7 +107,7 @@ fn query_t.dump():void {
     fmt.printf("(%d rows)\n", self.rows.len())
 }
 
-fn deserialize<T>(query_t result):[T]! {
+fn scan<T>(query_t result):[T]! {
     var t = reflect.typeof_hash(@reflect_hash(T))
     var list = vec_new<T>(@default(T), result.rows.len())
 
@@ -226,7 +226,7 @@ fn scan_value(string? value_option, anyptr p, ptr<reflect.type_t> t):void! {
             }
 
             if t.hashes.len() > 0 { // not any
-                throw errorf('only `any` type deserialize is supported')
+                throw errorf('only `any` type scan is supported')
             }
             var any_val = scan_any(value)
             unsafe.ptr_copy<any>(p, &any_val)

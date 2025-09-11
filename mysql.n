@@ -1390,15 +1390,15 @@ fn main():void! {
     r2 = c.query("SELECT * FROM users")
     r2.dump()
 
-    // deserialize result set
-    fmt.printf("\n=== Deserialize Result Set ===\n")
+    // scan result set
+    fmt.printf("\n=== scan Result Set ===\n")
     type user_t = struct{
         int id
         string name
         string? email
         int age
     }
-    var list = result.deserialize<user_t>(r2) 
+    var list = result.scan<user_t>(r2) 
     for item in list {
         fmt.printf("ID: %d, Name: %s, Email: %v, Age: %d\n", item.id, item.name, item.email, item.age)
     }
