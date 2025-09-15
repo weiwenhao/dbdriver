@@ -4,7 +4,6 @@ import fmt
 import mem
 import crypto.sha256
 import crypto.rsa
-import crypto.types
 import time
 import libc
 import base64
