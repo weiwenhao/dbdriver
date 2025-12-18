@@ -636,8 +636,8 @@ fn conn_t.handle_query_result():result.query_t! {
             READY_FOR_QUERY -> {
                 // Ready for next query
                 return result.query_t{
-                    columns = columns,
-                    rows = rows,
+                    columns: columns,
+                    rows: rows,
                 }
             }
             ERROR_RESPONSE -> {
@@ -646,16 +646,16 @@ fn conn_t.handle_query_result():result.query_t! {
             }
             _ -> {
                 return result.query_t{
-                    columns = columns,
-                    rows = rows,
+                    columns: columns,
+                    rows: rows,
                 }
             }
         }
     }
 
     return result.query_t{
-        columns = columns,
-        rows = rows,
+        columns: columns,
+        rows: rows,
     }
 }
 
@@ -679,7 +679,7 @@ fn conn_t.handle_execute_result():result.execute_t! {
             }
             READY_FOR_QUERY -> {
                 return result.execute_t{
-                    affected_rows = affected_rows,
+                    affected_rows: affected_rows,
                 }
             }
             ERROR_RESPONSE -> {
@@ -691,7 +691,7 @@ fn conn_t.handle_execute_result():result.execute_t! {
     }
 
     return result.execute_t{
-        affected_rows = affected_rows,
+        affected_rows: affected_rows,
     }
 }
 
@@ -930,7 +930,7 @@ fn stmt_t.handle_execute_response():result.execute_t! {
             }
             READY_FOR_QUERY -> {
                 return result.execute_t{
-                    affected_rows = affected_rows,
+                    affected_rows: affected_rows,
                 }
             }
             ERROR_RESPONSE -> {
@@ -942,7 +942,7 @@ fn stmt_t.handle_execute_response():result.execute_t! {
     }
 
     return result.execute_t{
-        affected_rows = affected_rows,
+        affected_rows: affected_rows,
     }
 }
 
@@ -970,8 +970,8 @@ fn stmt_t.handle_query_response():result.query_t! {
             }
             READY_FOR_QUERY -> {
                 return result.query_t{
-                    columns = columns,
-                    rows = rows,
+                    columns: columns,
+                    rows: rows,
                 }
             }
             ERROR_RESPONSE -> {
@@ -983,8 +983,8 @@ fn stmt_t.handle_query_response():result.query_t! {
     }
 
     return result.query_t{
-        columns = columns,
-        rows = rows,
+        columns: columns,
+        rows: rows,
     }
 }
 

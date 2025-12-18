@@ -10,7 +10,7 @@ type conn_t = struct{
 fn connect(string host, string password):ptr<conn_t>! {
     var tcp_conn = tcp.connect_timeout(host, 10000)
     var conn = new conn_t(conn = tcp_conn, reader = buf.reader<ptr<tcp.conn_t>>{
-        rd = tcp_conn,
+        rd: tcp_conn,
     })
 
     if password != "" {

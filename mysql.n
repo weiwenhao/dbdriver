@@ -171,9 +171,9 @@ fn conn_t.parse_handshake_packet([u8] packet):handshake_packet_t! {
     pos += 2 // Lower capability flags
     if pos >= packet.len() {
         return handshake_packet_t{
-            server_version = server_version,
-            auth_data = auth_data1,
-            auth_plugin = AUTH_NATIVE_PASSWORD,
+            server_version: server_version,
+            auth_data: auth_data1,
+            auth_plugin: AUTH_NATIVE_PASSWORD,
         }
     }
 
@@ -201,9 +201,9 @@ fn conn_t.parse_handshake_packet([u8] packet):handshake_packet_t! {
     }
 
     return handshake_packet_t{
-        server_version = server_version,
-        auth_data = auth_data1.concat(auth_data2),
-        auth_plugin = auth_plugin,
+        server_version: server_version,
+        auth_data: auth_data1.concat(auth_data2),
+        auth_plugin: auth_plugin,
     }
 }
 
@@ -506,7 +506,7 @@ fn conn_t.query(string query):result.query_t! {
     match packet[0] {
         PACKET_OK -> {
             // Possibly a query with no results
-            return result.query_t{columns = [], rows = []}
+            return result.query_t{columns: [], rows: []}
         }
         PACKET_ERROR -> {
             var error_msg = self.parse_error_packet(packet)
@@ -616,8 +616,8 @@ fn conn_t.parse_execute_result([u8] packet):result.execute_t {
     }
 
     return result.execute_t{
-        affected_rows = affected_rows,
-        last_insert_id = last_insert_id,
+        affected_rows: affected_rows,
+        last_insert_id: last_insert_id,
     }
 }
 
@@ -656,8 +656,8 @@ fn conn_t.parse_query_result([u8] first_packet):result.query_t! {
     }
 
     return result.query_t{
-        columns = columns,
-        rows = rows,
+        columns: columns,
+        rows: rows,
     }
 }
 
@@ -892,7 +892,7 @@ fn stmt_t.query(...[any] args):result.query_t! {
 
     match packet[0] {
         PACKET_OK -> {
-            return result.query_t{columns = [], rows = []}
+            return result.query_t{columns: [], rows: []}
         }
         PACKET_ERROR -> {
             var error_msg = self.conn.parse_error_packet(packet)
@@ -1115,8 +1115,8 @@ fn stmt_t.parse_binary_query_result([u8] first_packet):result.query_t! {
     }
 
     return result.query_t{
-        columns = columns,
-        rows = rows,
+        columns: columns,
+        rows: rows,
     }
 }
 
