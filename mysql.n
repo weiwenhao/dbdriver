@@ -998,48 +998,48 @@ fn stmt_t.build_execute_packet([any] args):[u8]! {
                 is null -> {
                     // NULL values are handled by NULL bitmap, no data written
                 }
-                is string -> {
-                    var str_bytes = arg as [u8]
+                is string s -> {
+                    var str_bytes = s as [u8]
                     var length_bytes = self.encode_length_encoded_int(str_bytes.len() as u64)
                     packet.append(length_bytes)
                     packet.append(str_bytes)
                 }
-                is bool -> {
-                    if arg {
+                is bool v -> {
+                    if v {
                         packet.push(1)
                     } else {
                         packet.push(0) 
                     }
                 }
-                is i16 -> {
-                    var bytes = mem.write_i16_le(arg)
+                is i16 v -> {
+                    var bytes = mem.write_i16_le(v)
                     packet.append(bytes)
                 }
-                is u16 -> {
-                    var bytes = mem.write_u16_le(arg)
+                is u16 v -> {
+                    var bytes = mem.write_u16_le(v)
                     packet.append(bytes)
                 }
-                is i32 -> {
-                    var bytes = mem.write_i32_le(arg)
+                is i32 v -> {
+                    var bytes = mem.write_i32_le(v)
                     packet.append(bytes)
                 }
-                is u32 -> {
-                    var bytes = mem.write_u32_le(arg)
+                is u32 v -> {
+                    var bytes = mem.write_u32_le(v)
                     packet.append(bytes)
                 }
-                is i64 -> {
-                    var bytes = mem.write_i64_le(arg)
+                is i64 v -> {
+                    var bytes = mem.write_i64_le(v)
                     packet.append(bytes)
                 }
-                is u64 -> {
-                    var bytes = mem.write_u64_le(arg)
+                is u64 v -> {
+                    var bytes = mem.write_u64_le(v)
                     packet.append(bytes)
                 }
-                is f32 -> {
-                    packet.append(mem.write_f32_le(arg as f32))
+                is f32 v -> {
+                    packet.append(mem.write_f32_le(v as f32))
                 }
-                is f64 -> {
-                    packet.append(mem.write_f64_le(arg as f64))
+                is f64 v -> {
+                    packet.append(mem.write_f64_le(v as f64))
                 }
                 _ -> {
                     throw errorf('unsupported argument type')

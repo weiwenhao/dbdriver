@@ -29,9 +29,9 @@ fn query_t.dump():void {
 
     for row in self.rows {
         for i, cell in row {
-            if cell is string {
-                if i < col_widths.len() && cell.len() > col_widths[i] {
-                    col_widths[i] = cell.len()
+            if cell is string s {
+                if i < col_widths.len() && s.len() > col_widths[i] {
+                    col_widths[i] = s.len()
                 }
             } else {
                 // For NULL values, compare with current column width
@@ -77,8 +77,8 @@ fn query_t.dump():void {
         fmt.printf("|")
         for i, cell in row {
             var cell_len = 0
-            if cell is string {
-                cell_len = cell.len()
+            if cell is string s {
+                cell_len = s.len()
             } else {
                 cell_len = 'NULL'.len()  // NULL is 4 characters
             }
