@@ -15,14 +15,14 @@ type execute_t = struct {
 }
 
 
-fn query_t.dump():void {
+fn query_t.dump(self):void {
     if self.columns.len() == 0 {
         ("Empty result set\n")
         return
     }
 
     // Calculate maximum width for each column
-    var col_widths = vec_new<int>(0, self.columns.len())
+    var col_widths = vec<int>.new(0, self.columns.len())
     for i, col in self.columns {
         col_widths[i] = col.len()
     }
@@ -109,7 +109,7 @@ fn query_t.dump():void {
 
 fn scan<T>(query_t result):[T]! {
     var t = reflect.typeof_hash(@reflect_hash(T))
-    var list = vec_new<T>(@default(T), result.rows.len())
+    var list = vec<T>.new(@default(T), result.rows.len())
 
     for i, row in result.rows {
         var val = @default(T) // nullable is null
@@ -128,19 +128,18 @@ fn scan<T>(query_t result):[T]! {
     return list
 }
 
-fn scan_map([string] columns, [string?] row, anyptr p, ptr<reflect.type_t> t):void! {
-    anyptr v = unsafe.ptr_to<anyptr>(p)
-    var rv = v as rawptr<reflect.map_t>
+fn scan_map([string] columns, [string?] row, anyptr p, ref<reflect.type_t> t):void! {
+    var rv = p as ptr<reflect.map_t>
 
     var val_type = reflect.typeof_hash(t.hashes[1])
 
     for i,col in columns {
-        var val_p = runtime.map_assign(v, &col as anyptr)
+        var val_p = runtime.map_assign(p, &col as anyptr)
         scan_value(row[i], val_p, val_type)
     }
 }
 
-fn scan_struct([string] columns, [string?] row, anyptr p, ptr<reflect.type_t> t):void! {
+fn scan_struct([string] columns, [string?] row, anyptr p, ref<reflect.type_t> t):void! {
     {string:reflect.field_t} m = {}
     for field in t.fields {
         m[field.name] = field
@@ -157,16 +156,28 @@ fn scan_struct([string] columns, [string?] row, anyptr p, ptr<reflect.type_t> t)
     }
 }
 
-fn scan_value(string? value_option, anyptr p, ptr<reflect.type_t> t):void! {
+fn scan_value(string? value_option, anyptr p, ref<reflect.type_t> t):void! {
     // handle nullable
     if value_option is null {
-        if t.kind == reflect.UNION && ((t.hashes.len() == 2 && t.hashes[1] == json.null_hash) || t.hashes.len() == 0){
-            any temp = null
-            unsafe.ptr_copy<any>(p, &temp)
-            return
+        match t.kind {
+            reflect.UNION -> {
+                 if t.hashes.len() != 2 || t.hashes[1] != json.null_hash {
+                     throw errorf('only nullable union support')
+                 }
+
+                 var rv = p as ptr<reflect.union_t>
+                 var null_type = reflect.typeof(null)
+                 rv.rtype = null_type.r
+                 return
+            }
+            reflect.ANY -> {
+                any temp = null
+                unsafe.ptr_copy<any>(p, &temp)
+            }
+            _ -> { throw errorf('cannot scan null to %s', t.to_string()) }
         }
 
-        throw errorf('cannot scan to null')
+        return
     }
 
     var value = value_option as string
@@ -223,11 +234,11 @@ fn scan_value(string? value_option, anyptr p, ptr<reflect.type_t> t):void! {
              if t.hashes.len() == 2 && t.hashes[1] == json.null_hash {
                 scan_nullable(value, p, t)
                 return
-            }
+             }
 
-            if t.hashes.len() > 0 { // not any
-                throw errorf('only `any` type scan is supported')
-            }
+             throw errorf('only nullable union type scan is supported')
+        }
+        reflect.ANY -> {
             var any_val = scan_any(value)
             unsafe.ptr_copy<any>(p, &any_val)
         }
@@ -242,9 +253,8 @@ fn scan_value(string? value_option, anyptr p, ptr<reflect.type_t> t):void! {
     }
 }
 
-fn scan_nullable(string value, anyptr p, ptr<reflect.type_t> t):void! {
-    anyptr v = unsafe.ptr_to<anyptr>(p)
-    var rv = v as rawptr<reflect.union_t>
+fn scan_nullable(string value, anyptr p, ref<reflect.type_t> t):void! {
+    var rv = p as ptr<reflect.union_t>
 
     var target_p = &rv.value as anyptr
     if t.hashes.len() != 2 {
@@ -254,19 +264,19 @@ fn scan_nullable(string value, anyptr p, ptr<reflect.type_t> t):void! {
 
     var hash = t.hashes[0]
     var target_type = reflect.typeof_hash(hash)
-    
+
     match target_type.kind {
         reflect.VEC -> {
             var element_type = reflect.typeof_hash(target_type.hashes[0])
-            rv.value = runtime.vec_cap(hash, element_type.hash, 0)
+            runtime.vec_new_out(&rv.value as anyptr, hash, element_type.hash, 0)
         }
         reflect.MAP -> {
             var key_type = reflect.typeof_hash(target_type.hashes[0])
             var value_type = reflect.typeof_hash(target_type.hashes[1])
-            rv.value = runtime.map_new(hash, key_type.hash, value_type.hash)
+            runtime.map_new_out(&rv.value as anyptr, hash, key_type.hash, value_type.hash)
         }
-        reflect.STRUCT -> {
-            rv.value = runtime.gc_malloc(hash)
+        reflect.STRING -> {
+            runtime.vec_new_out(&rv.value as anyptr, hash, @reflect_hash(u8), 0)
         }
         _ -> {}
     }

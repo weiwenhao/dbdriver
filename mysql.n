@@ -84,7 +84,7 @@ type handshake_packet_t = struct {
 
 // Prepared statement type
 type stmt_t = struct {
-    ptr<conn_t> conn
+    ref<conn_t> conn
     u32 statement_id
     u16 param_count
     u16 column_count
@@ -93,14 +93,14 @@ type stmt_t = struct {
 
 // MySQL connection type
 type conn_t = struct {
-    ptr<tcp.conn_t> conn
+    ref<tcp.conn_t> conn
     u8 seq_id
     bool closed
     [u8] auth_data  // Store auth_data for full authentication
 }
 
 // Create connection with specified configuration
-fn connect(string host, string username, string password, string database):ptr<conn_t>! {
+fn connect(string host, string username, string password, string database):ref<conn_t>! {
     var conn = tcp.connect_timeout(host, 10000)
 
     var client = new conn_t(conn, seq_id = 0, closed = false, auth_data = [])
@@ -120,7 +120,7 @@ fn connect(string host, string username, string password, string database):ptr<c
 }
 
 // Authentication process
-fn conn_t.authenticate(string username, string password):void! {
+fn conn_t.authenticate(&self, string username, string password):void! {
     // Read handshake packet
     var handshake = self.read_handshake()
 
@@ -135,7 +135,7 @@ fn conn_t.authenticate(string username, string password):void! {
 }
 
 // Read handshake packet
-fn conn_t.read_handshake():handshake_packet_t! {
+fn conn_t.read_handshake(&self):handshake_packet_t! {
     var packet = self.read_packet()
 
     if packet.len() == 0 || packet[0] == PACKET_ERROR {
@@ -146,7 +146,7 @@ fn conn_t.read_handshake():handshake_packet_t! {
 }
 
 // Parse handshake packet
-fn conn_t.parse_handshake_packet([u8] packet):handshake_packet_t! {
+fn conn_t.parse_handshake_packet(&self, [u8] packet):handshake_packet_t! {
     if packet.len() < 20 {
         throw errorf("Handshake packet length insufficient")
     }
@@ -185,7 +185,7 @@ fn conn_t.parse_handshake_packet([u8] packet):handshake_packet_t! {
     pos += 10 // Reserved bytes
 
     // Read second part of auth data
-    var auth_data2 = vec_new<u8>(0, 0)
+    var auth_data2 = vec<u8>.new(0, 0)
     if auth_data_len > 8 && pos < packet.len() {
         var remaining_len = auth_data_len as int - 8
         if pos + remaining_len <= packet.len() {
@@ -208,7 +208,7 @@ fn conn_t.parse_handshake_packet([u8] packet):handshake_packet_t! {
 }
 
 // Send authentication response
-fn conn_t.send_auth_response(string username, string password, handshake_packet_t handshake):void! {
+fn conn_t.send_auth_response(&self, string username, string password, handshake_packet_t handshake):void! {
     u32 capabilities = CLIENT_PROTOCOL_41 | CLIENT_SECURE_CONNECTION | CLIENT_PLUGIN_AUTH | CLIENT_PLUGIN_AUTH_LENENC_CLIENT_DATA
 
     var auth_response = self.generate_auth_response(password, handshake.auth_data, handshake.auth_plugin)
@@ -218,7 +218,7 @@ fn conn_t.send_auth_response(string username, string password, handshake_packet_
 }
 
 // Generate authentication response
-fn conn_t.generate_auth_response(string password, [u8] auth_data, string auth_plugin):[u8]! {
+fn conn_t.generate_auth_response(&self, string password, [u8] auth_data, string auth_plugin):[u8]! {
     if password == "" {
         return []
     }
@@ -237,8 +237,8 @@ fn conn_t.generate_auth_response(string password, [u8] auth_data, string auth_pl
 }
 
 // Build authentication packet
-fn conn_t.build_auth_packet(u32 capabilities, string username, [u8] auth_response, string auth_plugin):[u8]! {
-    var packet = vec_cap<u8>(256)
+fn conn_t.build_auth_packet(&self, u32 capabilities, string username, [u8] auth_response, string auth_plugin):[u8]! {
+    var packet = vec<u8>.cap_of(256)
 
     // Client capability flags (4 bytes)
     var cap_bytes = mem.write_u32_le(capabilities)
@@ -251,7 +251,7 @@ fn conn_t.build_auth_packet(u32 capabilities, string username, [u8] auth_respons
     packet.push(0xe0) // utf8mb4_general_ci
 
     // Reserved bytes (23 bytes)
-    packet.append(vec_new<u8>(0, 23))
+    packet.append(vec<u8>.new(0, 23))
 
     // Username
     packet.append(username as [u8])
@@ -269,7 +269,7 @@ fn conn_t.build_auth_packet(u32 capabilities, string username, [u8] auth_respons
 }
 
 // Handle authentication result
-fn conn_t.handle_auth_result(string password):void! {
+fn conn_t.handle_auth_result(&self, string password):void! {
     var packet = self.read_packet()
 
     if packet.len() == 0 {
@@ -297,7 +297,7 @@ fn conn_t.handle_auth_result(string password):void! {
 }
 
 // Request RSA public key from server
-fn conn_t.request_public_key():[u8]! {
+fn conn_t.request_public_key(&self):[u8]! {
     // Send public key request
     [u8] request_packet = [REQUEST_PUBLIC_KEY]
     self.write_packet(request_packet)
@@ -327,8 +327,8 @@ fn conn_t.request_public_key():[u8]! {
 }
 
 // RSA encrypt password for caching_sha2_password authentication
-fn conn_t.rsa_encrypt_password(string password, [u8] seed, [u8] public_key_pem):[u8]! {
-    var plain = vec_new<u8>(0, password.len() + 1)
+fn conn_t.rsa_encrypt_password(&self, string password, [u8] seed, [u8] public_key_pem):[u8]! {
+    var plain = vec<u8>.new(0, password.len() + 1)
     plain.copy(password as [u8])
 
     for i, v in plain {
@@ -343,7 +343,7 @@ fn conn_t.rsa_encrypt_password(string password, [u8] seed, [u8] public_key_pem):
 }
 
 // Handle caching_sha2_password authentication
-fn conn_t.handle_caching_sha2_auth([u8] packet, string password):void! {
+fn conn_t.handle_caching_sha2_auth(&self, [u8] packet, string password):void! {
     if packet.len() <= 1 {
         throw errorf("caching_sha2_password authentication packet format error")
     }
@@ -368,7 +368,7 @@ fn conn_t.handle_caching_sha2_auth([u8] packet, string password):void! {
 }
 
 // Perform full authentication for caching_sha2_password
-fn conn_t.perform_full_authentication(string password, [u8] initial_packet):void! {
+fn conn_t.perform_full_authentication(&self, string password, [u8] initial_packet):void! {
     // Extract auth_data from the initial handshake (stored in connection context)
     var auth_data = self.auth_data
     
@@ -410,7 +410,7 @@ fn conn_t.perform_full_authentication(string password, [u8] initial_packet):void
 }
 
 // mysql_native_password authentication
-fn conn_t.native_password_auth(string password, [u8] auth_data):[u8] {
+fn conn_t.native_password_auth(&self, string password, [u8] auth_data):[u8] {
     if password == "" {
         return []
     }
@@ -421,7 +421,7 @@ fn conn_t.native_password_auth(string password, [u8] auth_data):[u8] {
     var combined = auth_data.concat(hash2)
     var hash3 = sha256.new().update(combined).finish()
 
-    var result = vec_new<u8>(0, hash1.len())
+    var result = vec<u8>.new(0, hash1.len())
     for int i = 0; i < hash1.len(); i += 1 {
         result[i] = hash1[i] ^ hash3[i]
     }
@@ -430,7 +430,7 @@ fn conn_t.native_password_auth(string password, [u8] auth_data):[u8] {
 }
 
 // caching_sha2_password authentication
-fn conn_t.caching_sha2_auth(string password, [u8] scramble):[u8] {
+fn conn_t.caching_sha2_auth(&self, string password, [u8] scramble):[u8] {
     if password.len() == 0 {
         return []
     }
@@ -450,14 +450,14 @@ fn conn_t.caching_sha2_auth(string password, [u8] scramble):[u8] {
 }
 
 // Execute non-query statements (INSERT, UPDATE, DELETE, etc.)
-fn conn_t.execute(string query):result.execute_t! {
+fn conn_t.execute(&self, string query):result.execute_t! {
     if self.closed {
         throw errorf("Connection is closed")
     }
 
     self.seq_id = 0
 
-    var query_packet = vec_new<u8>(0, 1 + query.len())
+    var query_packet = vec<u8>.new(0, 1 + query.len())
     query_packet[0] = COM_QUERY
     query_packet[1..query_packet.len()].copy(query as [u8])
 
@@ -484,14 +484,14 @@ fn conn_t.execute(string query):result.execute_t! {
 }
 
 // Execute query statements (SELECT, etc.)
-fn conn_t.query(string query):result.query_t! {
+fn conn_t.query(&self, string query):result.query_t! {
     if self.closed {
         throw errorf("Connection is closed")
     }
 
     self.seq_id = 0
 
-    var query_packet = vec_new<u8>(0, 1 + query.len())
+    var query_packet = vec<u8>.new(0, 1 + query.len())
     query_packet[0] = COM_QUERY
     query_packet[1..query_packet.len()].copy(query as [u8])
 
@@ -519,14 +519,14 @@ fn conn_t.query(string query):result.query_t! {
 }
 
 // Prepare statement
-fn conn_t.prepare(string query):ptr<stmt_t>! {
+fn conn_t.prepare(&self, string query):ref<stmt_t>! {
     if self.closed {
         throw errorf("Connection is closed")
     }
 
     self.seq_id = 0
 
-    var prepare_packet = vec_new<u8>(0, 1 + query.len())
+    var prepare_packet = vec<u8>.new(0, 1 + query.len())
     prepare_packet[0] = COM_STMT_PREPARE
     prepare_packet[1..prepare_packet.len()].copy(query as [u8])
 
@@ -547,11 +547,11 @@ fn conn_t.prepare(string query):ptr<stmt_t>! {
 }
 
 // Set charset for connection
-fn conn_t.set_charset(string charset):void! {
+fn conn_t.set_charset(&self, string charset):void! {
     var query = fmt.sprintf("SET NAMES %s", charset)
     self.seq_id = 0
 
-    var query_packet = vec_new<u8>(0, 1 + query.len())
+    var query_packet = vec<u8>.new(0, 1 + query.len())
     query_packet[0] = COM_QUERY
     query_packet[1..query_packet.len()].copy(query as [u8])
 
@@ -578,7 +578,7 @@ fn conn_t.set_charset(string charset):void! {
 }
 
 // Close connection
-fn conn_t.close() {
+fn conn_t.close(&self) {
     if self.closed {
         return
     }
@@ -590,7 +590,7 @@ fn conn_t.close() {
 }
 
 // Parse execute result
-fn conn_t.parse_execute_result([u8] packet):result.execute_t {
+fn conn_t.parse_execute_result(&self, [u8] packet):result.execute_t {
     var pos = 1 // Skip OK identifier
 
     var (affected_rows, new_pos) = self.read_length_encoded_int(packet, pos)
@@ -622,11 +622,11 @@ fn conn_t.parse_execute_result([u8] packet):result.execute_t {
 }
 
 // Parse query result
-fn conn_t.parse_query_result([u8] first_packet):result.query_t! {
+fn conn_t.parse_query_result(&self, [u8] first_packet):result.query_t! {
     var column_count = first_packet[0] as int
 
     // Read column definitions
-    var columns = vec_new<string>("", column_count)
+    var columns = vec<string>.new("", column_count)
     for int i = 0; i < column_count; i += 1 {
         var col_packet = self.read_packet()
         columns[i] = self.parse_column_name(col_packet)
@@ -635,7 +635,7 @@ fn conn_t.parse_query_result([u8] first_packet):result.query_t! {
     // Read EOF packet
     var eof_packet = self.read_packet()
 
-    var rows = vec_new<[string?]>([], 0)
+    var rows = vec<[string?]>.new([], 0)
 
     // If not EOF packet, this is the first row of data
     if !self.is_eof_packet(eof_packet) {
@@ -662,7 +662,7 @@ fn conn_t.parse_query_result([u8] first_packet):result.query_t! {
 }
 
 // Parse column name
-fn conn_t.parse_column_name([u8] packet):string {
+fn conn_t.parse_column_name(&self, [u8] packet):string {
     // Simplified column name parsing, skip most fields and find column name directly
     var pos = 0
 
@@ -685,8 +685,8 @@ fn conn_t.parse_column_name([u8] packet):string {
 }
 
 // Parse row data
-fn conn_t.parse_row([u8] packet, int column_count):[string?] {
-    var row = vec_new<string?>(null, column_count)
+fn conn_t.parse_row(&self, [u8] packet, int column_count):[string?] {
+    var row = vec<string?>.new(null, column_count)
     var pos = 0
 
     for int i = 0; i < column_count && pos < packet.len(); i += 1 {
@@ -708,8 +708,8 @@ fn conn_t.parse_row([u8] packet, int column_count):[string?] {
 }
 
 // Read MySQL packet
-fn conn_t.read_packet():[u8]! {
-    var header = vec_new<u8>(0, 4)
+fn conn_t.read_packet(&self):[u8]! {
+    var header = vec<u8>.new(0, 4)
     var len = self.conn.read(header)
     if len != 4 {
         throw errorf("Failed to read packet header")
@@ -718,7 +718,7 @@ fn conn_t.read_packet():[u8]! {
     var length = header[0] as int | (header[1] as int << 8) | (header[2] as int << 16)
     self.seq_id = header[3] + 1
 
-    var payload = vec_new<u8>(0, length)
+    var payload = vec<u8>.new(0, length)
     len = self.conn.read(payload)
     if len != length {
         throw errorf("Failed to read packet body")
@@ -728,7 +728,7 @@ fn conn_t.read_packet():[u8]! {
 }
 
 // Write MySQL packet
-fn conn_t.write_packet([u8] payload):void! {
+fn conn_t.write_packet(&self, [u8] payload):void! {
     var length = payload.len()
     [u8] header = [length as u8, (length >> 8) as u8, (length >> 16) as u8, self.seq_id]
 
@@ -739,12 +739,12 @@ fn conn_t.write_packet([u8] payload):void! {
 }
 
 // Check if it's an EOF packet
-fn conn_t.is_eof_packet([u8] packet):bool {
+fn conn_t.is_eof_packet(&self, [u8] packet):bool {
     return packet.len() > 0 && packet[0] == PACKET_EOF && packet.len() < 9
 }
 
 // Read null-terminated string
-fn conn_t.read_null_terminated_string([u8] data, int pos):(string, int) {
+fn conn_t.read_null_terminated_string(&self, [u8] data, int pos):(string, int) {
     var start = pos
     for pos < data.len() && data[pos] != 0 {
         pos += 1
@@ -753,7 +753,7 @@ fn conn_t.read_null_terminated_string([u8] data, int pos):(string, int) {
 }
 
 // Read length-encoded string
-fn conn_t.read_length_encoded_string([u8] data, int pos):(string, int) {
+fn conn_t.read_length_encoded_string(&self, [u8] data, int pos):(string, int) {
     var (length, new_pos) = self.read_length_encoded_int(data, pos)
     pos = new_pos
     if pos + length as int <= data.len() {
@@ -763,7 +763,7 @@ fn conn_t.read_length_encoded_string([u8] data, int pos):(string, int) {
 }
 
 // Read length-encoded integer
-fn conn_t.read_length_encoded_int([u8] data, int pos):(int, int) {
+fn conn_t.read_length_encoded_int(&self, [u8] data, int pos):(int, int) {
     if pos >= data.len() {
         return (0, pos)
     }
@@ -801,7 +801,7 @@ fn conn_t.read_length_encoded_int([u8] data, int pos):(int, int) {
 }
 
 // Parse prepare response
-fn conn_t.parse_prepare_response([u8] packet, string query):ptr<stmt_t>! {
+fn conn_t.parse_prepare_response(&self, [u8] packet, string query):ref<stmt_t>! {
     if packet.len() < 12 {
         throw errorf("Prepare response packet length insufficient")
     }
@@ -843,7 +843,7 @@ fn conn_t.parse_prepare_response([u8] packet, string query):ptr<stmt_t>! {
 }
 
 // Execute prepared statement
-fn stmt_t.execute(...[any] args):result.execute_t! {
+fn stmt_t.execute(&self, ...[any] args):result.execute_t! {
     if self.conn.closed {
         throw errorf("Connection is closed")
     }
@@ -874,7 +874,7 @@ fn stmt_t.execute(...[any] args):result.execute_t! {
 }
 
 // Query with prepared statement
-fn stmt_t.query(...[any] args):result.query_t! {
+fn stmt_t.query(&self, ...[any] args):result.query_t! {
     if self.conn.closed {
         throw errorf("Connection is closed")
     }
@@ -905,14 +905,14 @@ fn stmt_t.query(...[any] args):result.query_t! {
 }
 
 // Close prepared statement
-fn stmt_t.close():void! {
+fn stmt_t.close(&self):void! {
     if self.conn.closed {
         return
     }
 
     self.conn.seq_id = 0
 
-    var close_packet = vec_new<u8>(0, 5)
+    var close_packet = vec<u8>.new(0, 5)
     close_packet[0] = COM_STMT_CLOSE
     var stmt_id_bytes = mem.write_u32_le(self.statement_id)
     close_packet.slice(1, 5).copy(stmt_id_bytes)
@@ -921,8 +921,8 @@ fn stmt_t.close():void! {
 }
 
 // Build execute packet
-fn stmt_t.build_execute_packet([any] args):[u8]! {
-    var packet = vec_cap<u8>(1024)
+fn stmt_t.build_execute_packet(&self, [any] args):[u8]! {
+    var packet = vec<u8>.cap_of(1024)
 
     // Command type
     packet.push(COM_STMT_EXECUTE)
@@ -940,7 +940,7 @@ fn stmt_t.build_execute_packet([any] args):[u8]! {
     if args.len() > 0 {
         // NULL bitmap
         var null_bitmap_len = (args.len() + 7) / 8
-        var null_bitmap = vec_new<u8>(0, null_bitmap_len)
+        var null_bitmap = vec<u8>.new(0, null_bitmap_len)
         
         // Fill NULL bitmap - mark NULL values
         for i,arg in args {
@@ -1052,24 +1052,24 @@ fn stmt_t.build_execute_packet([any] args):[u8]! {
 }
 
 // Encode length-encoded integer
-fn stmt_t.encode_length_encoded_int(u64 value):[u8] {
+fn stmt_t.encode_length_encoded_int(&self, u64 value):[u8] {
     if value < 251 {
         return [value as u8]
     } else if value < 65536 {
-        var result = vec_new<u8>(0, 3)
+        var result = vec<u8>.new(0, 3)
         result[0] = 0xfc
         var val_bytes = mem.write_u16_le(value as u16) catch e {[]}
         result.slice(1, 3).copy(val_bytes)
         return result
     } else if value < 16777216 {
-        var result = vec_new<u8>(0, 4)
+        var result = vec<u8>.new(0, 4)
         result[0] = 0xfd
         result[1] = value as u8
         result[2] = (value >> 8) as u8
         result[3] = (value >> 16) as u8
         return result
     } else {
-        var result = vec_new<u8>(0, 9)
+        var result = vec<u8>.new(0, 9)
         result[0] = 0xfe
         var val_bytes = mem.write_u64_le(value) catch e {[]}
         result.slice(1, 9).copy(val_bytes)
@@ -1078,12 +1078,12 @@ fn stmt_t.encode_length_encoded_int(u64 value):[u8] {
 }
 
 // Parse binary query result (for prepared statements)
-fn stmt_t.parse_binary_query_result([u8] first_packet):result.query_t! {
+fn stmt_t.parse_binary_query_result(&self, [u8] first_packet):result.query_t! {
     var column_count = first_packet[0] as int
 
     // Read column definitions
-    var columns = vec_new<string>("", column_count)
-    var column_types = vec_new<u8>(0, column_count)
+    var columns = vec<string>.new("", column_count)
+    var column_types = vec<u8>.new(0, column_count)
     
     for int i = 0; i < column_count; i += 1 {
         var col_packet = self.conn.read_packet()
@@ -1094,7 +1094,7 @@ fn stmt_t.parse_binary_query_result([u8] first_packet):result.query_t! {
     // Read EOF packet
     var eof_packet = self.conn.read_packet()
 
-    var rows = vec_new<[string?]>([], 0)
+    var rows = vec<[string?]>.new([], 0)
 
     // If not EOF packet, this is the first row of data
     if !self.conn.is_eof_packet(eof_packet) {
@@ -1121,7 +1121,7 @@ fn stmt_t.parse_binary_query_result([u8] first_packet):result.query_t! {
 }
 
 // Parse column type
-fn stmt_t.parse_column_type([u8] packet):u8 {
+fn stmt_t.parse_column_type(&self, [u8] packet):u8 {
     var pos = 0
     
     // Skip catalog, schema, table, org_table, name, org_name
@@ -1158,9 +1158,9 @@ fn stmt_t.parse_column_type([u8] packet):u8 {
 }
 
 // Parse binary row with types
-fn stmt_t.parse_binary_row_with_types([u8] packet, int column_count, [u8] column_types):[string?] {
+fn stmt_t.parse_binary_row_with_types(&self, [u8] packet, int column_count, [u8] column_types):[string?] {
     if packet.len() == 0 {
-        return vec_new<string?>("", column_count)
+        return vec<string?>.new("", column_count)
     }
 
     // Skip packet header identifier (0x00)
@@ -1169,13 +1169,13 @@ fn stmt_t.parse_binary_row_with_types([u8] packet, int column_count, [u8] column
     // NULL bitmap length calculation
     var null_bitmap_len = (column_count + 7 + 2) / 8
     if pos + null_bitmap_len > packet.len() {
-        return vec_new<string?>("", column_count)
+        return vec<string?>.new("", column_count)
     }
 
     var null_bitmap = packet[pos..pos + null_bitmap_len]
     pos += null_bitmap_len
 
-    var row = vec_new<string?>("", column_count)
+    var row = vec<string?>.new("", column_count)
 
     for int i = 0; i < column_count; i += 1 {
         // Check NULL bitmap
@@ -1218,7 +1218,7 @@ fn stmt_t.parse_binary_row_with_types([u8] packet, int column_count, [u8] column
 }
 
 // Parse binary field by type
-fn stmt_t.parse_binary_field_by_type([u8] packet, int pos, u8 field_type):(string, int) {
+fn stmt_t.parse_binary_field_by_type(&self, [u8] packet, int pos, u8 field_type):(string, int) {
     match field_type {
         MYSQL_TYPE_DECIMAL|MYSQL_TYPE_NEWDECIMAL -> {
             // For decimal types, treat as string for now
@@ -1328,7 +1328,7 @@ fn stmt_t.parse_binary_field_by_type([u8] packet, int pos, u8 field_type):(strin
 }
 
 // Parse error packet
-fn conn_t.parse_error_packet([u8] packet):string {
+fn conn_t.parse_error_packet(&self, [u8] packet):string {
     if packet.len() < 3 {
         return "Error packet format incorrect"
     }
@@ -1349,7 +1349,7 @@ fn conn_t.parse_error_packet([u8] packet):string {
 
 // Print query results in table format
 
-fn main():void! {
+test main {
     fmt.printf("=== MySQL API Refactoring Test ===\n")
     fmt.printf("\n")
 

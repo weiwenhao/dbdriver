@@ -53,7 +53,7 @@ type scram_auth = struct{
 
 // Prepared statement type
 type stmt_t = struct {
-    ptr<conn_t> conn
+    ref<conn_t> conn
     string name          // Statement name
     string query_string         // Original query string
     int param_count      // Parameter count
@@ -65,13 +65,13 @@ type conn_t = struct{
     string username
     string password
     string database
-    ptr<tcp.conn_t> conn
+    ref<tcp.conn_t> conn
     scram_auth sa
     bool closed
     int stmt_counter     // 语句计数器，用于生成唯一的语句名称
 }
 
-fn connect(string host, string username, string password, string database):ptr<conn_t>! {
+fn connect(string host, string username, string password, string database):ref<conn_t>! {
     var tcp_conn = tcp.connect_timeout(host, 10000)
 
 
@@ -89,7 +89,7 @@ fn connect(string host, string username, string password, string database):ptr<c
     return c
 }
 
-fn conn_t.startup():void! {
+fn conn_t.startup(&self):void! {
     var buf = new io.buffer()
     var startup_msg_buf = mem.write_u32_be(startup_msg)
     buf.write(startup_msg_buf)
@@ -119,7 +119,7 @@ fn conn_t.startup():void! {
     self.conn.write(msg)
 }
 
-fn conn_t.auth(string username, string password):void! {
+fn conn_t.auth(&self, string username, string password):void! {
     for true {
         var (msg_type, msg_buf) = self.read_msg()
 
@@ -171,8 +171,8 @@ fn conn_t.auth(string username, string password):void! {
     }
 }
 
-fn conn_t.parse_error_msg([u8] data):string {
-    var result = vec_cap<u8>(data.len())
+fn conn_t.parse_error_msg(&self, [u8] data):string {
+    var result = vec<u8>.cap_of(data.len())
 
     int i = 0
     for i < data.len() {
@@ -201,7 +201,7 @@ fn conn_t.parse_error_msg([u8] data):string {
     return result as string
 }
 
-fn conn_t.parse_row_description([u8] data):[string] {
+fn conn_t.parse_row_description(&self, [u8] data):[string] {
     if data.len() < 2 {
         return []
     }
@@ -229,7 +229,7 @@ fn conn_t.parse_row_description([u8] data):[string] {
     return columns
 }
 
-fn conn_t.parse_data_row([u8] data):[string?] {
+fn conn_t.parse_data_row(&self, [u8] data):[string?] {
     if data.len() < 2 {
         return []
     }
@@ -263,7 +263,7 @@ fn conn_t.parse_data_row([u8] data):[string?] {
     return values
 }
 
-fn conn_t.parse_error_message([u8] data):string {
+fn conn_t.parse_error_message(&self, [u8] data):string {
     string result = ''
     var i = 0
     for i < data.len() {
@@ -293,7 +293,7 @@ fn conn_t.parse_error_message([u8] data):string {
     return result
 }
 
-fn conn_t.close() {
+fn conn_t.close(&self) {
     if self.closed {
         return
     }
@@ -302,8 +302,8 @@ fn conn_t.close() {
 }
 
 
-fn conn_t.read_msg():(u8, [u8])! {
-    var msg_type_buf = vec_new<u8>(0, 1)
+fn conn_t.read_msg(&self):(u8, [u8])! {
+    var msg_type_buf = vec<u8>.new(0, 1)
     var len = self.conn.read(msg_type_buf)
     if len != 1 {
         throw errorf('failed to read message type')
@@ -311,7 +311,7 @@ fn conn_t.read_msg():(u8, [u8])! {
 
     var msg_type = msg_type_buf[0]
 
-    var len_buf = vec_new<u8>(0, 4)
+    var len_buf = vec<u8>.new(0, 4)
     len = self.conn.read(len_buf)
     if len != 4 {
         throw errorf('failed to read message length')
@@ -327,7 +327,7 @@ fn conn_t.read_msg():(u8, [u8])! {
         return (msg_type, [])
     }
 
-    var body_buf = vec_new<u8>(0, body_len)
+    var body_buf = vec<u8>.new(0, body_len)
     len = self.conn.read(body_buf)
     if len != body_len {
         throw errorf('truncate message: expected %d, got %d', body_len, len)
@@ -336,7 +336,7 @@ fn conn_t.read_msg():(u8, [u8])! {
     return (msg_type, body_buf)
 }
 
-fn conn_t.send_password(string password):void! {
+fn conn_t.send_password(&self, string password):void! {
     var buf = new io.buffer()
     buf.write_byte(PASSWORD_MESSAGE)
 
@@ -348,7 +348,7 @@ fn conn_t.send_password(string password):void! {
     self.conn.write(buf.read_all())
 }
 
-fn conn_t.send_md5_password(string username, string password, [u8] salt):void! {
+fn conn_t.send_md5_password(&self, string username, string password, [u8] salt):void! {
     var inner = md5.new().update((password + username) as [u8]).finish()
     inner.append(salt)
     string outer = md5.hex(inner as string)
@@ -358,7 +358,7 @@ fn conn_t.send_md5_password(string username, string password, [u8] salt):void! {
     self.send_password(md5_password)
 }
 
-fn conn_t.parse_sasl_mechanisms([u8] data):[string] {
+fn conn_t.parse_sasl_mechanisms(&self, [u8] data):[string] {
     [string] result = []
     var start = 0
     for i, b in data {
@@ -374,7 +374,7 @@ fn conn_t.parse_sasl_mechanisms([u8] data):[string] {
     return result
 }
 
-fn conn_t.contains_mechanism([string] mechanisms, string target):bool {
+fn conn_t.contains_mechanism(&self, [string] mechanisms, string target):bool {
     for _, mechanism in mechanisms {
         if mechanism == target {
             return true
@@ -384,7 +384,7 @@ fn conn_t.contains_mechanism([string] mechanisms, string target):bool {
 }
 
 fn gen_client_nonce():string {
-    var notice = vec_new<u8>(0, 18)
+    var notice = vec<u8>.new(0, 18)
     libc.srand(time.unix() as u32)
 
     for int i = 0; i < 18; i +=1 {
@@ -395,7 +395,7 @@ fn gen_client_nonce():string {
     return base64.encode(notice) as string
 }
 
-fn conn_t.start_scram_auth(string username, string password):void! {
+fn conn_t.start_scram_auth(&self, string username, string password):void! {
     self.sa.username = username
     self.sa.password = password
     self.sa.client_nonce = gen_client_nonce()
@@ -419,7 +419,7 @@ fn conn_t.start_scram_auth(string username, string password):void! {
     self.conn.write(msg)
 }
 
-fn conn_t.continue_scram_auth([u8] data):void! {
+fn conn_t.continue_scram_auth(&self, [u8] data):void! {
     self.sa.server_first_message = data as string
 
     var parts = self.sa.server_first_message.split(',')
@@ -462,7 +462,7 @@ fn conn_t.continue_scram_auth([u8] data):void! {
     self.conn.write(bytes)
 }
 
-fn conn_t.gen_client_final_msg():string! {
+fn conn_t.gen_client_final_msg(&self):string! {
     string client_final_without_proof = fmt.sprintf('c=biws,r=%s', self.sa.server_nonce)
 
     self.sa.auth_message = fmt.sprintf('%s,%s,%s',
@@ -483,7 +483,7 @@ fn conn_t.gen_client_final_msg():string! {
     var client_signature = hmac.new(hmac.SHA256, stored_key).update(self.sa.auth_message as [u8]).finish()
 
     // Calculate ClientProof (ClientKey XOR ClientSignature)
-    var client_proof = vec_new<u8>(0, client_key.len())
+    var client_proof = vec<u8>.new(0, client_key.len())
     for int i = 0; i < client_key.len(); i += 1 {
         client_proof[i] = client_key[i] ^ client_signature[i]
     }
@@ -497,16 +497,16 @@ fn conn_t.gen_client_final_msg():string! {
     return result
 }
 
-fn conn_t.pbkdf2([u8] password, [u8] salt, int iterations, int key_len):[u8]! {
+fn conn_t.pbkdf2(&self, [u8] password, [u8] salt, int iterations, int key_len):[u8]! {
     var hash_len = 32 // SHA-256 output length
     var num_blocks = (key_len + hash_len - 1) / hash_len
 
-    var result = vec_cap<u8>(32)
+    var result = vec<u8>.cap_of(32)
     var salt_len = salt.len()
 
     for int i = 1; i <= num_blocks; i += 1 {
         // U1 = PRF(password, salt || INT(i))
-        var block = vec_new<u8>(0, salt_len + 4)
+        var block = vec<u8>.new(0, salt_len + 4)
         block.copy(salt)
 
         // Add big-endian i
@@ -531,7 +531,7 @@ fn conn_t.pbkdf2([u8] password, [u8] salt, int iterations, int key_len):[u8]! {
     return result.slice(0, key_len)
 }
 
-fn conn_t.finalize_scram_auth([u8] data):void! {
+fn conn_t.finalize_scram_auth(&self, [u8] data):void! {
     string server_final_message = data as string
 
     // Parse server verification
@@ -565,7 +565,7 @@ fn conn_t.finalize_scram_auth([u8] data):void! {
     throw errorf('unknown server final message format')
 }
 
-fn conn_t.wait_for_ready():void! {
+fn conn_t.wait_for_ready(&self):void! {
     for true {
         var (msg_type, _) = self.read_msg()
         if msg_type == READY_FOR_QUERY {
@@ -574,7 +574,7 @@ fn conn_t.wait_for_ready():void! {
     }
 }
 
-fn conn_t.query(string sql):result.query_t! {
+fn conn_t.query(&self, string sql):result.query_t! {
     if self.closed {
         throw errorf('db closed')
     }
@@ -594,7 +594,7 @@ fn conn_t.query(string sql):result.query_t! {
     return self.handle_query_result()
 }
 
-fn conn_t.execute(string sql):result.execute_t! {
+fn conn_t.execute(&self, string sql):result.execute_t! {
     if self.closed {
         throw errorf('db closed')
     }
@@ -614,7 +614,7 @@ fn conn_t.execute(string sql):result.execute_t! {
     return self.handle_execute_result()
 }
 
-fn conn_t.handle_query_result():result.query_t! {
+fn conn_t.handle_query_result(&self):result.query_t! {
     [string] columns = []
     [[string?]] rows = []
     var command_complete = false
@@ -659,7 +659,7 @@ fn conn_t.handle_query_result():result.query_t! {
     }
 }
 
-fn conn_t.handle_execute_result():result.execute_t! {
+fn conn_t.handle_execute_result(&self):result.execute_t! {
     string command = ''
     int affected_rows = 0
 
@@ -696,7 +696,7 @@ fn conn_t.handle_execute_result():result.execute_t! {
 }
 
 // Prepare statement
-fn conn_t.prepare(string query):ptr<stmt_t>! {
+fn conn_t.prepare(&self, string query):ref<stmt_t>! {
     if self.closed {
         throw errorf('db closed')
     }
@@ -753,7 +753,7 @@ fn conn_t.prepare(string query):ptr<stmt_t>! {
 
 
 // Prepared statement execute method
-fn stmt_t.execute(...[any] args):result.execute_t! {
+fn stmt_t.execute(&self, ...[any] args):result.execute_t! {
     if self.closed {
         throw errorf('statement closed')
     }
@@ -809,7 +809,7 @@ fn stmt_t.execute(...[any] args):result.execute_t! {
 }
 
 // Prepared statement query method
-fn stmt_t.query(...[any] args):result.query_t! {
+fn stmt_t.query(&self, ...[any] args):result.query_t! {
     if self.closed {
         throw errorf('statement closed')
     }
@@ -865,7 +865,7 @@ fn stmt_t.query(...[any] args):result.query_t! {
 }
 
 // Close prepared statement
-fn stmt_t.close():void! {
+fn stmt_t.close(&self):void! {
     if self.closed {
         return
     }
@@ -907,7 +907,7 @@ fn stmt_t.close():void! {
 }
 
 // Handle execute response
-fn stmt_t.handle_execute_response():result.execute_t! {
+fn stmt_t.handle_execute_response(&self):result.execute_t! {
     string command = ''
     int affected_rows = 0
 
@@ -947,7 +947,7 @@ fn stmt_t.handle_execute_response():result.execute_t! {
 }
 
 // Handle query response
-fn stmt_t.handle_query_response():result.query_t! {
+fn stmt_t.handle_query_response(&self):result.query_t! {
     [string] columns = []
     [[string?]] rows = []
 
@@ -988,7 +988,7 @@ fn stmt_t.handle_query_response():result.query_t! {
     }
 }
 
-fn main():void! {
+test main {
     println('start connect')
 
     // Connect to database

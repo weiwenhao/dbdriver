@@ -3,15 +3,15 @@ import io.buf
 import fmt
 
 type conn_t = struct{
-    ptr<tcp.conn_t> conn
-    buf.reader<ptr<tcp.conn_t>> reader
+    ref<tcp.conn_t> conn
+    ref<buf.reader<ref<tcp.conn_t>>> reader
 }
 
-fn connect(string host, string password):ptr<conn_t>! {
+fn connect(string host, string password):ref<conn_t>! {
     var tcp_conn = tcp.connect_timeout(host, 10000)
-    var conn = new conn_t(conn = tcp_conn, reader = buf.reader<ptr<tcp.conn_t>>{
-        rd: tcp_conn,
-    })
+    var conn = new conn_t(conn = tcp_conn, reader = new buf.reader<ref<tcp.conn_t>>(
+        rd = tcp_conn,
+    ))
 
     if password != "" {
         conn.send('AUTH', 'hello')
@@ -22,7 +22,7 @@ fn connect(string host, string password):ptr<conn_t>! {
     return conn
 }
 
-fn conn_t.send(...[string] args):void! {
+fn conn_t.send(&self, ...[string] args):void! {
     var command = fmt.sprintf('*%d\r\n', args.len())
     for arg in args {
         command += fmt.sprintf('$%d\r\n%s\r\n', arg.len(), arg)
@@ -30,7 +30,7 @@ fn conn_t.send(...[string] args):void! {
     self.conn.write(command as [u8])
 }
 
-fn conn_t.recv():string! {
+fn conn_t.recv(&self):string! {
     var line = self.reader.read_line()
     match line[0] {
         '+'.char()|'-'.char()|':'.char() -> { 
@@ -39,7 +39,7 @@ fn conn_t.recv():string! {
         '$'.char() -> {
             var length = line.slice(1, line.len()).to_int()
 
-            var data = vec_new<u8>(0, length + 2)
+            var data = vec<u8>.new(0, length + 2)
             self.reader.read(data)
 
             return data.slice(0, length) as string
@@ -53,13 +53,13 @@ fn conn_t.recv():string! {
     return ''
 }
 
-fn conn_t.execute(...[string] args):string! {
+fn conn_t.execute(&self, ...[string] args):string! {
     self.send(...args)
 
     return self.recv()
 }
 
-fn main():void! {
+test basic {
     var conn = connect('127.0.0.1:6379', 'hello')
     
     // 基础字符串操作
