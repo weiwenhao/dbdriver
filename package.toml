@@ -1,9 +1,9 @@
 name = "db"
-version = "0.16.0"
+version = "0.17.0"
 authors = ["weiwenhao <wwhacker@qq.com>"]
 license = "MIT"
 type = "lib"
-nature = "0.7.2"
+nature = "0.7.4"
 
 [links]
 
